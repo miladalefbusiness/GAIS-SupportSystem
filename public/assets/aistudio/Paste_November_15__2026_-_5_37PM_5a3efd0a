@@ -1,0 +1,1178 @@
+MASTER PROJECT PROMPT — Organizational AI Support Desk & File Hub
+
+1. Project Objective
+
+Build a complete, secure, self-hosted Organizational AI Support Desk and Internal File Sharing System.
+
+This is an independent web application, not a WordPress plugin and not an embedded chat widget.
+
+The application will be deployed on a dedicated subdomain of the organization's main website, for example:
+
+"support.example.com"
+
+The system must provide four integrated workspaces:
+
+1. Public Customer Support Portal
+2. Operator Helpdesk
+3. Shared File Hub
+4. Super Admin Control Panel
+
+Additionally, the application must include an AI-powered customer support assistant connected to an organization-managed Knowledge Base.
+
+The AI assistant must answer customer questions using verified organizational knowledge, not general model knowledge or unsupported assumptions.
+
+The application must be production-oriented, modular, maintainable, lightweight, secure, and straightforward to install, update, back up, and restore.
+
+Do not build a toy demo or a visually attractive but functionally incomplete prototype.
+
+---
+
+2. Technology and Architecture
+
+Use a Modular Monolith architecture.
+
+Preferred stack:
+
+- Next.js App Router
+- TypeScript
+- PostgreSQL
+- Drizzle ORM
+- Drizzle Kit for database migrations
+- Better Auth for authentication and session management
+- Zod for input validation
+- Tailwind CSS
+- shadcn/ui as the base UI component system
+- A maintained real-time communication solution compatible with the selected architecture
+- An AI integration layer supporting OpenAI-compatible APIs
+- A document-processing and retrieval system for the Knowledge Base
+- Docker Compose for deployment
+- S3-compatible storage abstraction, with local persistent storage supported initially
+
+Use stable, maintained packages. Before selecting any package, verify its current maintenance status, compatibility, security, and official documentation.
+
+Do not introduce unnecessary microservices, Kubernetes, Redis, or additional infrastructure unless a demonstrated requirement justifies them.
+
+The database must be the source of truth. All schema changes must be managed through version-controlled migrations.
+
+Keep the application modular so that support, AI, knowledge management, file management, users, departments, permissions, notifications, and reporting can evolve independently without rewriting the core.
+
+---
+
+3. Public Customer Support Portal
+
+This portal is a complete responsive web application, not a floating chat widget.
+
+3.1 Dynamic Department Selection Page
+
+The landing page must display the organization's support departments as clear, attractive, clickable cards or buttons.
+
+Examples:
+
+- Education Department
+- Membership Department
+- Finance Department
+- Technical Support
+- Administration
+- Other departments created by the Super Admin
+
+Department buttons must be generated dynamically from the database.
+
+When the Super Admin creates a new department and activates it, its button must automatically appear on the public landing page without requiring code changes or a new deployment.
+
+When a department is deactivated or hidden from public access, its button must disappear from the public page while its existing tickets and records remain preserved.
+
+Each department must support:
+
+- Name
+- Description
+- Icon
+- Display order
+- Active/inactive status
+- Public visibility
+- AI assistant enabled/disabled
+- Human operator availability settings
+- Department-specific welcome message
+- Department-specific knowledge base access
+
+Clicking a department opens its dedicated support conversation interface.
+
+3.2 Customer Identification
+
+Before creating a support request, collect:
+
+- National ID number (Iranian Code Melli)
+- Full name
+
+Validate the national ID format and checksum on the server.
+
+The national ID is the customer identity attribute used to associate their conversations and support history.
+
+Important security requirements:
+
+- Never use the national ID as a database primary key.
+- Never expose the raw national ID in URLs, public APIs, logs, error messages, or operator-facing lists.
+- Encrypt stored national ID values using application-level encryption with a secret key stored outside the database.
+- Use a keyed HMAC or equivalent secure lookup mechanism for finding existing customers without exposing the original value.
+- Do not rely on national ID alone to authorize access to previous conversations.
+- Require OTP verification or another approved identity verification method before displaying existing customer history.
+- Keep the SMS provider configurable through environment variables.
+- If SMS integration is not available during initial development, implement a clean verification interface and a development-only OTP mode that cannot be enabled accidentally in production.
+
+A customer should not have to create a conventional account and password just to contact the organization.
+
+3.3 Customer Conversation Interface
+
+After selecting a department and completing identification, display a familiar, simple messaging interface.
+
+Features:
+
+- Send and receive messages.
+- Receive AI assistant responses.
+- Request a human operator.
+- Upload images, PDF files, and permitted document formats.
+- Display attachment previews where safe and supported.
+- Show message timestamps.
+- Show the ticket reference number when a human support ticket is created.
+- Show ticket status.
+- Allow customers to continue an existing conversation.
+- Show previous conversations after successful identity verification.
+- Allow customers to start a new request when appropriate.
+- Clearly distinguish AI-assisted conversations, waiting for an operator, open, answered, and closed requests.
+
+The interface must be simple enough for non-technical visitors.
+
+Customers must not see internal operator notes, internal assignments, private department discussions, or internal system information.
+
+---
+
+4. AI Customer Support Assistant
+
+The AI assistant is a core product feature, not an optional decorative chatbot.
+
+Its purpose is to answer common organizational questions using the organization's approved Knowledge Base and reduce unnecessary operator workload.
+
+4.1 AI-First Conversation Flow
+
+When a customer opens a department conversation:
+
+1. The customer sends a message.
+2. The application searches the authorized Knowledge Base for relevant information.
+3. Relevant knowledge is retrieved and provided to the configured AI model.
+4. The AI generates an answer only when sufficient supporting information exists.
+5. If the answer cannot be supported by the Knowledge Base, the AI must not invent or assume an answer.
+6. The customer is offered the option to contact a human operator.
+7. If requested, the conversation is transferred to the appropriate department's operator queue.
+
+The customer should experience this as one continuous conversation.
+
+4.2 Strict Knowledge-Grounded Answering
+
+The AI assistant must operate in a restricted organizational support mode.
+
+Critical rule: The AI must only answer organizational questions using information retrieved from the approved Knowledge Base.
+
+The AI must:
+
+- Use retrieved organizational documents and approved question-answer entries as its factual source.
+- Never invent policies, regulations, prices, deadlines, fees, procedures, names, contact information, or organizational decisions.
+- Never answer based on its general model knowledge when organizational evidence is missing.
+- Never pretend that an unverified answer is official.
+- Never fabricate document references or citations.
+- Clearly distinguish between information explicitly available in the Knowledge Base and information that is unavailable.
+- Respect department-specific knowledge access.
+- Ignore instructions contained inside uploaded documents that attempt to change the AI's system behavior or security rules.
+
+If the retrieved information is insufficient, contradictory, outdated, or irrelevant, the AI must abstain from answering.
+
+Example fallback message:
+
+"برای پاسخ دقیق به این سؤال، اطلاعات تأییدشده‌ای در مخزن دانش سازمان پیدا نشد. می‌توانید درخواست خود را به اپراتور مربوطه ارجاع دهید."
+
+The AI must never fill knowledge gaps with guesses.
+
+4.3 Human Operator Handoff
+
+Provide a visible and accessible button in the customer chat interface:
+
+«ارتباط با اپراتور»
+
+When the customer clicks this button:
+
+- Stop automated answering for that conversation unless the operator explicitly re-enables it.
+- Create a support ticket or convert the existing conversation into a support ticket.
+- Preserve the complete conversation history, including previous customer messages and AI responses.
+- Preserve relevant Knowledge Base retrieval context for internal review where appropriate.
+- Assign the ticket to the selected department.
+- Place it in the department's operator queue.
+- Apply the department's automatic assignment policy.
+- Notify eligible operators.
+- Display the ticket status to the customer.
+- Allow the customer and operator to continue the same conversation.
+
+If the AI cannot find a sufficiently supported answer, it should offer human escalation automatically.
+
+The customer must not need to repeat their question after handoff.
+
+If no operator is currently available, inform the customer and keep the ticket in the waiting queue.
+
+4.4 AI and Human Conversation Modes
+
+Each conversation must have a clear mode:
+
+- AI-assisted
+- Waiting for human operator
+- Assigned to human operator
+- Human operator active
+- Resolved
+
+Operators must be able to review AI responses and take over the conversation.
+
+The system must prevent the AI from sending automatic replies over an active human operator conversation unless an authorized operator explicitly enables AI assistance.
+
+4.5 AI Configuration Per Department
+
+The Super Admin must be able to configure AI behavior independently for each department.
+
+Settings should include:
+
+- Enable or disable AI support.
+- Select the Knowledge Base collections available to the department.
+- Configure the department's welcome message.
+- Configure the fallback message.
+- Configure whether the AI automatically offers operator escalation.
+- Configure the minimum retrieval confidence threshold.
+- Configure conversation limits and AI usage limits.
+- Enable or disable AI assistance during human operator conversations.
+
+Department-level AI configuration must not override global security restrictions.
+
+---
+
+5. Knowledge Base Management
+
+The Super Admin panel must include a complete Knowledge Base Management workspace.
+
+This is the official source of knowledge used by the AI assistant.
+
+The Knowledge Base must support two primary methods of entering information.
+
+5.1 Document Upload
+
+Super Admin can upload organizational documents, including supported formats such as:
+
+- PDF
+- DOCX
+- TXT
+- Markdown
+- Other document formats only when reliable text extraction is supported
+
+The system must:
+
+1. Receive and securely store the document.
+2. Validate its file type and size.
+3. Extract its text.
+4. Process and normalize the extracted content.
+5. Split the content into meaningful searchable sections.
+6. Index the content for retrieval.
+7. Associate the document with one or more departments or Knowledge Base collections.
+8. Make it available to the AI only after successful processing.
+
+Show document processing status:
+
+- Uploaded
+- Processing
+- Indexed
+- Failed
+- Disabled
+
+The Super Admin must be able to:
+
+- View uploaded documents.
+- View extracted text where appropriate.
+- Edit document metadata.
+- Organize documents into collections.
+- Assign documents to departments.
+- Enable or disable documents.
+- Replace outdated documents.
+- Delete documents and their associated search index records.
+- Reprocess documents after changes.
+- See indexing errors.
+
+Do not silently treat failed or partially extracted documents as successfully indexed.
+
+5.2 Question and Answer Entries
+
+Provide a graphical Question and Answer editor.
+
+The Super Admin must be able to create structured entries containing:
+
+- Question
+- Official answer
+- Department or departments
+- Category
+- Keywords
+- Status
+- Last updated date
+
+Support multiple alternative questions for the same official answer.
+
+Example:
+
+Question: شرایط ثبت‌نام دوره مربیگری چیست؟
+
+Answer: The approved official registration procedure.
+
+The AI must be able to retrieve these entries as authoritative information.
+
+5.3 Knowledge Base Search and Retrieval
+
+Implement a retrieval-based architecture (RAG).
+
+Use a reliable retrieval pipeline with:
+
+- Text extraction
+- Document chunking
+- Keyword or full-text search
+- Semantic search when an embedding model is configured
+- Metadata filtering
+- Department-level filtering
+- Retrieval relevance scoring
+- Source tracking
+
+Do not require a complicated vector database from the beginning if PostgreSQL-based search is sufficient for the initial scale.
+
+The architecture must allow a vector search implementation to be introduced later without rewriting the Knowledge Base.
+
+Every AI response must be traceable internally to the documents or Q&A entries that supported it.
+
+Store the retrieved source references with the AI response for auditing and quality review.
+
+Do not expose confidential internal document content or internal source metadata to customers unless explicitly approved.
+
+5.4 Knowledge Base Access Control
+
+Knowledge Base content may be:
+
+- Global organizational knowledge
+- Department-specific knowledge
+- Restricted administrative knowledge
+
+The AI must only retrieve content authorized for the current department and conversation.
+
+A question asked through one department must not accidentally retrieve restricted knowledge from another department.
+
+Only authorized administrators may create, edit, publish, or delete Knowledge Base content.
+
+---
+
+6. AI Provider and API Configuration
+
+The Super Admin panel must include a dedicated AI Settings page.
+
+The system must not be hardcoded to one AI provider.
+
+Use an integration layer compatible with OpenAI-style APIs where possible.
+
+The Super Admin must be able to configure:
+
+- API provider name
+- API Base URL
+- API Key
+- Chat Model Name
+- Embedding Model Name, if semantic search is enabled
+- Request timeout
+- Maximum response tokens
+- Temperature or supported generation parameters
+- Global AI enable/disable switch
+
+Example configuration fields:
+
+- "AI_BASE_URL"
+- "AI_API_KEY"
+- "AI_CHAT_MODEL"
+- "AI_EMBEDDING_MODEL"
+
+These are conceptual configuration names; the implementation may use a secure database-backed settings service instead of reading all settings directly from environment variables.
+
+6.1 Secure Configuration
+
+The Super Admin must be able to enter and update AI configuration through the UI.
+
+Requirements:
+
+- Never expose API keys to frontend JavaScript.
+- Never return stored API keys in API responses.
+- Encrypt stored API keys at rest.
+- Provide masked key display.
+- Allow secure key replacement.
+- Never write API keys to logs.
+- Support environment-variable bootstrap configuration when required.
+- Provide a test connection button.
+- Show connection and model availability status.
+- Handle provider errors and timeouts gracefully.
+
+6.2 Provider Compatibility
+
+Use a provider adapter architecture.
+
+The application should support OpenAI-compatible endpoints, allowing different providers and self-hosted model endpoints to be configured through the Base URL, API Key, and model name.
+
+Do not hardcode provider-specific behavior into ticketing or Knowledge Base modules.
+
+If an API provider does not support a required feature, handle that limitation explicitly rather than silently pretending the feature works.
+
+6.3 AI Failure Handling
+
+If the AI API is unavailable, times out, rejects a request, or returns an invalid response:
+
+- Do not lose the customer's message.
+- Do not display fabricated responses.
+- Preserve the conversation.
+- Display a clear fallback message.
+- Offer human operator escalation.
+- Log technical errors without logging private customer information or secrets.
+
+Implement reasonable rate limits, request timeouts, retry policies, and usage controls.
+
+---
+
+7. Operator Helpdesk
+
+Build a professional helpdesk interface inspired by established customer support platforms.
+
+The operator interface must be optimized for desktop use while remaining responsive.
+
+7.1 Main Layout
+
+Use a professional application layout with:
+
+- A right-side navigation sidebar, appropriate for Persian RTL.
+- A main content area.
+- A top navigation bar.
+- User profile and notification controls.
+- Clear ticket status and assignment indicators.
+
+The top navigation must contain two main workspaces:
+
+1. Support Desk
+2. Shared Files
+
+Switching between these workspaces must not require logging in again.
+
+7.2 Ticket Management
+
+The Support Desk workspace must include:
+
+- All tickets assigned to the current operator.
+- Department ticket queue.
+- Unassigned tickets.
+- Open tickets.
+- Pending tickets.
+- Waiting-for-customer tickets.
+- Resolved tickets.
+- Closed tickets.
+- Ticket search.
+- Advanced filtering.
+- Sorting and pagination.
+- Customer history.
+- Ticket priority.
+- Ticket status.
+- Ticket assignment.
+- Department reassignment.
+- Operator reassignment.
+- Internal notes.
+- Conversation history.
+- Attachments.
+- Ticket activity timeline.
+- Audit history.
+- AI conversation history and source references where authorized.
+
+The ticket detail view should show the full conversation, customer information, ticket metadata, assignment, and internal notes in a clear layout.
+
+Internal notes must never be visible to customers or included in AI retrieval as public organizational knowledge.
+
+7.3 Department-Level Access
+
+Every operator belongs to one or more explicitly authorized departments.
+
+By default:
+
+- An operator can only see tickets belonging to their authorized departments.
+- An operator cannot access another department's tickets by changing a URL or API request.
+- An operator cannot reassign tickets to unauthorized departments.
+- A department manager may have additional permissions within their department.
+- Super Admin can access all departments and tickets according to system policy.
+
+All access restrictions must be enforced by the backend, not merely by hiding UI elements.
+
+7.4 Fair Ticket Distribution
+
+Implement an automatic ticket assignment engine.
+
+The system must support:
+
+- Round-robin assignment.
+- Least-loaded operator assignment.
+- Configurable assignment strategy per department.
+- Operator availability.
+- Active/inactive operator status.
+- Maximum active ticket limits.
+- Manual assignment and reassignment.
+- Automatic reassignment when an operator becomes inactive, where configured.
+- Unassigned ticket queue.
+
+The assignment engine must avoid repeatedly assigning new tickets to the same operator when other eligible operators are available.
+
+Record every automatic and manual assignment in the audit log.
+
+Assignment logic must be deterministic, concurrency-safe, and tested against simultaneous incoming tickets.
+
+---
+
+8. Shared File Hub
+
+The second top-level workspace is an organization-wide file-sharing area.
+
+It must function as a structured internal document library, not simply a list of uploaded files.
+
+8.1 File Organization
+
+Support:
+
+- Department-based file areas.
+- Folders and nested folders.
+- Files and folders created by authorized operators.
+- Folder names based on operator names or other administrator-defined structures.
+- Search and filtering.
+- File details and metadata.
+- Upload date.
+- Uploader information.
+- File size.
+- Download history where permitted.
+- File versioning or safe replacement where appropriate.
+
+The Super Admin must be able to manage the storage structure and configure storage limits.
+
+8.2 Department Permissions
+
+Implement strict department-level file access.
+
+Default rules:
+
+- Operators can upload and manage files in their authorized department.
+- Operators can edit, rename, move, or delete files only when they have the appropriate permissions.
+- Operators from other departments may view and download shared files according to the configured access policy.
+- They cannot edit, replace, move, or delete files belonging to another department.
+- Unauthorized users must not be able to access files by guessing direct file URLs.
+
+The Super Admin can define exceptions through granular permissions.
+
+8.3 Storage Management
+
+The Super Admin must be able to:
+
+- View total storage usage.
+- View usage per department.
+- View usage per operator.
+- Set maximum storage capacity.
+- Set department storage quotas.
+- Set individual operator upload quotas if required.
+- Configure allowed file types.
+- Configure maximum upload size.
+- View storage consumption and available capacity.
+- Manage folders and files.
+- Audit uploads, downloads, replacements, and deletions.
+
+Store uploaded files outside the application container and outside the relational database.
+
+Use a storage abstraction that supports local persistent storage initially and S3-compatible storage later.
+
+---
+
+9. Super Admin Control Panel
+
+The Super Admin panel is a critical part of the product.
+
+It must provide comprehensive control over the system, including configuration, users, departments, permissions, storage, AI, Knowledge Base, security, and appearance.
+
+9.1 Initial Super Admin Account
+
+The initial Super Admin bootstrap credentials must be configurable through environment variables.
+
+For example:
+
+- "SUPERADMIN_USERNAME"
+- "SUPERADMIN_PASSWORD"
+
+Requirements:
+
+- Create the initial account securely during first-time initialization.
+- Never store the plaintext password in the database.
+- Hash passwords using the authentication framework's secure password hashing mechanism.
+- Never recreate or overwrite an existing Super Admin account on every restart or deployment.
+- Require a password change after the first login.
+- Do not use environment variables as a permanent authentication mechanism for every login.
+- Provide secure recovery and credential rotation procedures.
+
+Never commit real credentials or secrets to Git.
+
+9.2 Department Management
+
+Super Admin must be able to:
+
+- Create departments.
+- Edit department details.
+- Activate or deactivate departments.
+- Configure department display order.
+- Configure department icons and descriptions.
+- Control public visibility.
+- Assign operators to departments.
+- Assign department managers.
+- Configure ticket assignment rules.
+- Configure department-specific upload limits.
+- Configure department-specific permissions.
+- Enable or disable the AI assistant per department.
+- Select authorized Knowledge Base collections per department.
+- Configure department-specific AI welcome and fallback messages.
+
+Creating and activating a department must automatically add its button to the public landing page.
+
+No code modification or redeployment should be required.
+
+9.3 Operator Management
+
+Super Admin must be able to:
+
+- Create operator accounts.
+- Edit operator information.
+- Activate, deactivate, and suspend accounts.
+- Reset credentials.
+- Assign operators to one or multiple departments.
+- Assign roles.
+- Configure permissions individually.
+- Configure operator availability.
+- View operator workload.
+- View operator activity.
+- View operator file usage.
+- View operator audit records.
+
+An operator may be created with access only to the Shared Files workspace and no access to the Support Desk.
+
+9.4 Granular Permission Management
+
+Implement a proper Role-Based Access Control system with optional user-specific permission overrides.
+
+Permissions must be defined at the action level, not just by broad role names.
+
+Examples:
+
+Support Desk
+
+- View tickets.
+- View department tickets.
+- View all tickets.
+- Create tickets internally.
+- Reply to tickets.
+- Add internal notes.
+- Change ticket status.
+- Assign tickets.
+- Reassign tickets.
+- Transfer tickets between departments.
+- View customer history.
+- Export ticket data.
+- Delete or archive tickets, if explicitly authorized.
+
+Shared Files
+
+- Access file workspace.
+- View files.
+- Download files.
+- Upload files.
+- Create folders.
+- Rename folders.
+- Edit file metadata.
+- Replace files.
+- Move files.
+- Delete files.
+- Manage own department files.
+- Manage all department files.
+- Manage storage quotas.
+
+Knowledge Base
+
+- Access Knowledge Base.
+- View knowledge entries.
+- Create question-answer entries.
+- Edit question-answer entries.
+- Publish and unpublish entries.
+- Upload documents.
+- Delete documents.
+- Reprocess documents.
+- Manage Knowledge Base collections.
+- Assign knowledge to departments.
+
+AI Settings
+
+- Access AI settings.
+- Configure API provider.
+- Change API Base URL.
+- Update API credentials.
+- Select models.
+- Test AI connections.
+- Configure department AI settings.
+- View AI usage reports.
+
+Administration
+
+- Manage users.
+- Manage departments.
+- Manage roles.
+- Manage permissions.
+- Manage system settings.
+- Manage storage.
+- View audit logs.
+- Manage integrations.
+- Manage backups, where supported.
+
+Permissions must be enforced centrally in backend authorization services and database access policies.
+
+Do not rely on frontend visibility restrictions as a security mechanism.
+
+Use deny-by-default authorization.
+
+---
+
+10. Security Requirements
+
+Security is a primary architectural requirement.
+
+Implement:
+
+- Secure authentication and session management.
+- Strong password hashing.
+- Secure cookie settings.
+- CSRF protection where applicable.
+- Rate limiting.
+- Login throttling and abuse protection.
+- Input validation and output encoding.
+- SQL injection protection through parameterized ORM queries.
+- XSS protection.
+- Secure file upload validation.
+- MIME type verification based on actual file content.
+- File extension allowlists.
+- Randomized server-side file identifiers.
+- Protection against path traversal.
+- Protection against unauthorized file access.
+- Strict server-side authorization checks.
+- Secure HTTP headers.
+- Audit logging.
+- Safe error handling without leaking secrets or personal data.
+- Secret management through environment variables.
+- Database backup protection.
+- Protection against brute-force attacks.
+- Appropriate session expiration and revocation.
+
+For uploads:
+
+- Never trust the original filename, extension, or client-provided MIME type.
+- Enforce configurable file size limits on both application and reverse proxy layers.
+- Generate internal storage names independently of user filenames.
+- Store files outside the publicly accessible web root.
+- Serve files through authorized backend download endpoints or short-lived signed URLs.
+- Prevent executable files from being served or executed.
+- Provide an antivirus scanning integration point, with a configurable scanner such as ClamAV.
+- Do not mark an upload as safe if scanning is unavailable or fails when scanning is configured as mandatory.
+- Log upload and download events.
+- Apply quotas and prevent storage exhaustion.
+
+For AI security:
+
+- Treat all customer messages and uploaded documents as untrusted input.
+- Prevent prompt injection from customer messages and Knowledge Base documents.
+- Never allow retrieved documents to override system-level AI instructions.
+- Do not expose system prompts, API keys, internal configuration, or unauthorized organizational information.
+- Apply department-level retrieval restrictions before sending context to the AI provider.
+- Keep AI provider credentials on the server.
+- Apply rate limits and usage limits to prevent API abuse.
+- Log AI activity without storing unnecessary sensitive personal data.
+- Ensure the AI cannot execute administrative actions or modify tickets, users, permissions, or files without a separately authorized application operation.
+
+The application must never expose customer national IDs, private conversations, or restricted files through public endpoints.
+
+---
+
+11. UI, Localization and User Experience
+
+The primary language is Persian.
+
+Requirements:
+
+- Complete RTL support.
+- Persian user interface.
+- Jalali calendar and Persian date display.
+- Proper Persian typography.
+- Persian number formatting where appropriate.
+- Responsive design.
+- Consistent design system.
+- Professional enterprise appearance.
+- Accessible controls and clear feedback.
+- Loading, empty, success, and error states.
+- Confirmation dialogs for destructive actions.
+
+The public portal should be simple and welcoming.
+
+The AI chat should feel natural and familiar, with a clearly visible option to contact a human operator.
+
+The operator workspace should prioritize productivity and information density.
+
+The Super Admin panel should prioritize control, visibility, and manageability.
+
+Do not build a generic dashboard with decorative charts and non-functional buttons.
+
+Every visible control must have a working implementation or be clearly marked as not yet implemented.
+
+---
+
+12. Data Model
+
+Design a normalized and extensible database schema.
+
+At minimum, consider the following entities:
+
+- users
+- customer_profiles
+- departments
+- department_memberships
+- roles
+- permissions
+- role_permissions
+- user_permission_overrides
+- tickets
+- ticket_messages
+- ticket_attachments
+- ticket_assignments
+- ticket_internal_notes, or an appropriately separated message visibility model
+- ticket_status_history
+- ticket_activity
+- operator_availability
+- file_folders
+- stored_files
+- file_permissions
+- storage_quotas
+- knowledge_collections
+- knowledge_documents
+- knowledge_document_versions
+- knowledge_chunks
+- knowledge_qa_entries
+- knowledge_retrieval_records
+- ai_provider_settings
+- ai_department_settings
+- ai_usage_logs
+- notifications
+- authentication_sessions
+- identity_verification_records
+- audit_logs
+- system_settings
+
+Use proper foreign keys, indexes, constraints, and transaction boundaries.
+
+Customer identity must be modeled independently from tickets so one customer can have multiple tickets across different departments.
+
+Do not use the national ID as a relational key.
+
+Avoid storing duplicate personal information unnecessarily.
+
+Design the schema to support future expansion without implementing unnecessary multi-tenant complexity in version one.
+
+---
+
+13. Deployment and Installation Package
+
+The final product must be delivered as a clean, self-hosted Docker application.
+
+Use Docker Compose for production deployment.
+
+The deployment package must include:
+
+- Production-ready Dockerfiles.
+- Docker Compose configuration.
+- PostgreSQL service.
+- Persistent database volumes.
+- Persistent file storage.
+- Persistent Knowledge Base processing/indexing data where applicable.
+- Reverse proxy and HTTPS configuration.
+- Health checks.
+- Environment configuration.
+- Database migration execution.
+- Backup and restore commands.
+- Upgrade and rollback procedures.
+- Application logs and status commands.
+
+Use a CI/CD pipeline to build versioned Docker images and publish them to a container registry.
+
+Do not depend on the "latest" image tag for production upgrades. Use explicit versioned releases.
+
+Support configurable image registries or mirrors because registry access may differ between hosting environments.
+
+Installation CLI
+
+Provide a simple management command, for example:
+
+- "supportdesk install"
+- "supportdesk update"
+- "supportdesk backup"
+- "supportdesk restore"
+- "supportdesk status"
+- "supportdesk logs"
+- "supportdesk version"
+
+A one-command installation experience is preferred, but it must not sacrifice security.
+
+The installer should:
+
+1. Verify system requirements.
+2. Check Docker and Docker Compose availability.
+3. Check required ports and domain configuration.
+4. Prepare persistent directories.
+5. Generate secure secrets when necessary.
+6. Create or validate environment configuration.
+7. Pull the selected application release.
+8. Start required services.
+9. Wait for database readiness.
+10. Run migrations safely.
+11. Perform health checks.
+12. Report installation status.
+
+Do not execute destructive operations silently.
+
+The update process must:
+
+1. Identify the current version.
+2. Create a database backup.
+3. Back up persistent files or verify their backup policy.
+4. Pull the requested version.
+5. Run compatible migrations.
+6. Restart services safely.
+7. Verify application health.
+8. Report success or failure.
+
+Provide a documented recovery procedure.
+
+Do not claim that database rollback is always automatic. If a migration is not backward-compatible, use a tested backup-and-restore recovery strategy.
+
+The application container must not require privileged access to the Docker socket.
+
+---
+
+14. Development and Implementation Rules
+
+Do not attempt to implement the entire system in one step.
+
+Work in controlled phases.
+
+Phase 1 — Foundation and Deployment
+
+Build only:
+
+- Project structure.
+- Authentication foundation.
+- Database connection.
+- Drizzle schema and migrations.
+- Initial Super Admin bootstrap.
+- Basic role and permission architecture.
+- Environment configuration.
+- Docker Compose.
+- Persistent storage structure.
+- Health checks.
+- Installation and update CLI.
+- Basic Persian RTL application shell.
+
+No full ticketing, AI, or file-sharing features yet.
+
+Acceptance criteria:
+
+- The project runs locally.
+- A clean Docker installation works.
+- The database initializes correctly.
+- The first Super Admin is created securely.
+- A fresh deployment does not overwrite existing data.
+- The application survives container restarts.
+- A documented update and backup process works.
+
+Do not proceed until this foundation is verified.
+
+Phase 2 — Departments, Operators and Permissions
+
+Implement:
+
+- Department management.
+- Dynamic public department list.
+- Operator management.
+- Role and permission management.
+- Department memberships.
+- Backend authorization enforcement.
+- Operator workspace navigation.
+
+Test cross-department access restrictions.
+
+Verify that creating a department through the Super Admin panel automatically makes it available on the public landing page when activated.
+
+Phase 3 — Knowledge Base and AI Integration
+
+Implement:
+
+- Knowledge Base management.
+- Document uploads and extraction.
+- Question and Answer editor.
+- Knowledge collections.
+- Department-level knowledge access.
+- Document indexing.
+- Retrieval pipeline.
+- AI provider configuration.
+- API connection testing.
+- AI chat integration.
+- Strict knowledge-grounded response behavior.
+- AI fallback and human escalation.
+
+Test the following scenarios:
+
+1. The AI finds an exact answer in the Knowledge Base.
+2. The AI finds relevant information in an uploaded document.
+3. The AI cannot find an answer and abstains.
+4. The AI encounters contradictory or outdated knowledge.
+5. The AI provider is unavailable.
+6. A department attempts to retrieve knowledge belonging to another department.
+7. A customer asks a prompt-injection question.
+8. A customer requests a human operator.
+
+The AI must never invent organizational information in these scenarios.
+
+Phase 4 — Customer Portal and Ticketing
+
+Implement:
+
+- Customer identification.
+- Identity verification.
+- Ticket creation.
+- Messaging.
+- Attachments.
+- Customer history.
+- Ticket statuses.
+- Internal notes.
+- Search and filters.
+- Assignment and reassignment.
+- Fair distribution engine.
+- AI-to-human conversation handoff.
+- Notifications and audit history.
+
+Test concurrent ticket creation and assignment.
+
+Phase 5 — Shared File Hub
+
+Implement:
+
+- Department file areas.
+- Folder management.
+- Upload and download.
+- File quotas.
+- File access rules.
+- Cross-department read/download restrictions.
+- Storage management.
+- Audit history.
+
+Test unauthorized access, file replacement, deletion, and direct URL access.
+
+Phase 6 — Super Admin and Reporting
+
+Complete:
+
+- System-wide settings.
+- Department configuration.
+- Granular permissions.
+- Storage administration.
+- Knowledge Base administration.
+- AI settings.
+- Operator activity.
+- Ticket reports.
+- Assignment reports.
+- AI usage reports.
+- Audit log viewer.
+- System health and operational information.
+
+Phase 7 — Production Hardening
+
+Perform:
+
+- Security review.
+- Permission matrix testing.
+- Upload security testing.
+- AI security and prompt-injection testing.
+- Knowledge retrieval accuracy testing.
+- Backup and restore testing.
+- Upgrade testing.
+- Performance testing.
+- Mobile and RTL review.
+- Error handling review.
+- Deployment documentation.
+
+---
+
+15. Critical Development Rules
+
+- Do not create fake functionality to make the UI appear complete.
+- Do not use hardcoded production credentials.
+- Do not store sensitive secrets in source code.
+- Do not use national ID as a primary key or expose it in URLs.
+- Do not trust frontend permission checks.
+- Do not expose private files through public static paths.
+- Do not overwrite production data during deployment.
+- Do not run destructive database initialization on every restart.
+- Do not mix demo seed data with real production data.
+- Demo data must only be inserted through an explicit development/demo process or when a verified empty database is initialized.
+- Never automatically reseed or overwrite existing customer, ticket, operator, or file records.
+- All database changes must use migrations.
+- All important administrative and security actions must be auditable.
+- Keep dependencies minimal and maintained.
+- Keep modules isolated and understandable.
+- Prefer established libraries over custom implementations of complex security features.
+- Do not rewrite working architecture without a documented technical reason.
+- Do not move to the next phase while critical tests in the current phase are failing.
+- Never allow the AI to answer organizational questions using unsupported general model knowledge.
+- Never allow department-specific AI retrieval to cross department security boundaries.
+- Never lose customer messages when the AI service fails.
+- Preserve the full conversation when handing off from AI to a human operator.
+
+Before installing packages, verify their compatibility and install them through the project's package manager so that dependencies and lockfiles remain consistent. Production dependencies must be installed during the Docker image build; do not rely on running package installation manually inside a production container.
+
+---
+
+16. Required Deliverables
+
+Maintain these project documents:
+
+- "README.md"
+- "ARCHITECTURE.md"
+- "SECURITY.md"
+- "DEPLOYMENT.md"
+- "BACKUP-RESTORE.md"
+- "PERMISSIONS.md"
+- "DATABASE.md"
+- "AI-ARCHITECTURE.md"
+- "KNOWLEDGE-BASE.md"
+- ".env.example"
+
+Maintain a clear record of completed phases, known limitations, and remaining tasks.
+
+At the end of each phase, report:
+
+1. What was implemented.
+2. Which packages and architectural decisions were used.
+3. Which database migrations were created.
+4. Which tests were executed.
+5. Which tests passed or failed.
+6. Any remaining security concerns.
+7. Exact commands to run locally and deploy.
+
+Start with Phase 1 only.
+
+First inspect the project environment, establish the architecture, and implement the smallest complete and deployable foundation. Do not start building the full ticketing, AI, Knowledge Base, or file-sharing system until Phase 1 passes its acceptance criteria.

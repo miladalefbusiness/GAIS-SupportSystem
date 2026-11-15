@@ -1,0 +1,6 @@
+{
+  "name": "سامانه پشتیبانی هوشمند و مخزن فایل سازمانی",
+  "description": "پلتفرم یکپارچه میز پشتیبانی هوشمند سازمانی، پاسخگویی مبتنی بر مخزن دانش و اشتراک‌گذاری امن فایل",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

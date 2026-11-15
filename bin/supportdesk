@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="${ROOT_DIR}/.env"
+BACKUP_DIR="${ROOT_DIR}/backups"
+APP_VERSION_FILE="${ROOT_DIR}/package.json"
+
+log() {
+  printf '[supportdesk] %s\n' "$1"
+}
+
+err() {
+  printf '[supportdesk][ERROR] %s\n' "$1" >&2
+  exit 1
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || err "Required command '$1' is not installed."
+}
+
+compose() {
+  docker compose -f "${ROOT_DIR}/docker-compose.yml" --env-file "${ENV_FILE}" "$@"
+}
+
+current_version() {
+  if [ -f "${ENV_FILE}" ] && grep -q '^APP_VERSION=' "${ENV_FILE}"; then
+    grep '^APP_VERSION=' "${ENV_FILE}" | head -n1 | cut -d= -f2- | tr -d '"'
+  else
+    grep '"version"' "${APP_VERSION_FILE}" | head -n1 | sed -E 's/.*"version": *"([^"]+)".*/\1/'
+  fi
+}
+
+generate_hex() {
+  openssl rand -hex 32
+}
+
+wait_healthy() {
+  local retries=30
+  local count=0
+  log "Waiting for application readiness health check..."
+  while [ "$count" -lt "$retries" ]; do
+    if compose exec -T app wget -qO- http://127.0.0.1:3000/api/health/ready >/dev/null 2>&1; then
+      log "Application is healthy and ready."
+      return 0
+    fi
+    count=$((count + 1))
+    sleep 2
+  done
+  err "Application failed readiness check after $((retries * 2)) seconds."
+}
+
+cmd_install() {
+  require_cmd docker
+  require_cmd openssl
+  docker compose version >/dev/null 2>&1 || err "Docker Compose v2 is required."
+
+  mkdir -p "${BACKUP_DIR}" "${ROOT_DIR}/data/storage"
+
+  if [ ! -f "${ENV_FILE}" ]; then
+    log "Creating ${ENV_FILE} from .env.example with freshly generated secrets..."
+    cp "${ROOT_DIR}/.env.example" "${ENV_FILE}"
+    sed -i.bak \
+      -e "s|CHANGE_ME_APP_DB_PASSWORD|$(generate_hex)|g" \
+      -e "s|CHANGE_ME_ADMIN_DB_PASSWORD|$(generate_hex)|g" \
+      -e "s|CHANGE_ME_GENERATE_AT_LEAST_32_CHARS_RANDOM_HEX|$(generate_hex)|g" \
+      -e "s|CHANGE_ME_64_HEX_CHARS_FOR_AES_256_GCM|$(generate_hex)|g" \
+      -e "s|CHANGE_ME_64_HEX_CHARS_FOR_HMAC_SHA256|$(generate_hex)|g" \
+      -e "s|CHANGE_ME_INITIAL_BOOTSTRAP_PASSWORD|$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | head -c 16)|g" \
+      "${ENV_FILE}"
+    rm -f "${ENV_FILE}.bak"
+    chmod 600 "${ENV_FILE}"
+    log "Generated ${ENV_FILE}. Please review DOMAIN_NAME, APP_URL, and SUPERADMIN_PASSWORD before production exposure."
+  else
+    log "Existing ${ENV_FILE} found; preserving existing secrets."
+  fi
+
+  log "Building/pulling versioned containers and starting PostgreSQL..."
+  compose up -d postgres
+  log "Waiting for PostgreSQL readiness..."
+  sleep 5
+  compose up -d --build app proxy
+  wait_healthy
+  log "Installation completed successfully."
+}
+
+cmd_backup() {
+  require_cmd docker
+  [ -f "${ENV_FILE}" ] || err "Missing ${ENV_FILE}. Run install first."
+  mkdir -p "${BACKUP_DIR}"
+  local stamp
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  local db_dump="${BACKUP_DIR}/db_${stamp}.sql.gz"
+  local files_archive="${BACKUP_DIR}/storage_${stamp}.tar.gz"
+
+  local pg_user pg_db
+  pg_user="$(grep '^POSTGRES_USER=' "${ENV_FILE}" | cut -d= -f2- | tr -d '"')"
+  pg_db="$(grep '^POSTGRES_DB=' "${ENV_FILE}" | cut -d= -f2- | tr -d '"')"
+
+  log "Creating PostgreSQL backup at ${db_dump}..."
+  compose exec -T postgres pg_dump -U "${pg_user:-supportdesk_admin}" "${pg_db:-supportdesk}" | gzip -9 > "${db_dump}"
+
+  log "Creating persistent storage backup at ${files_archive}..."
+  compose exec -T app tar -czf - -C /var/lib/supportdesk/storage . > "${files_archive}"
+
+  log "Backup completed: ${db_dump} and ${files_archive}"
+}
+
+cmd_restore() {
+  local db_dump="${1:-}"
+  local files_archive="${2:-}"
+  [ -n "${db_dump}" ] && [ -f "${db_dump}" ] || err "Usage: supportdesk restore <db_dump.sql.gz> [storage.tar.gz]"
+
+  printf 'WARNING: Restoring will overwrite current database records. Type YES to continue: '
+  read -r confirm
+  [ "${confirm}" = "YES" ] || err "Restore aborted by user."
+
+  local pg_user pg_db
+  pg_user="$(grep '^POSTGRES_USER=' "${ENV_FILE}" | cut -d= -f2- | tr -d '"')"
+  pg_db="$(grep '^POSTGRES_DB=' "${ENV_FILE}" | cut -d= -f2- | tr -d '"')"
+
+  log "Stopping app container before restore..."
+  compose stop app
+
+  log "Restoring PostgreSQL from ${db_dump}..."
+  gunzip -c "${db_dump}" | compose exec -T postgres psql -U "${pg_user:-supportdesk_admin}" -d "${pg_db:-supportdesk}"
+
+  if [ -n "${files_archive}" ] && [ -f "${files_archive}" ]; then
+    log "Restoring persistent storage from ${files_archive}..."
+    compose run --rm --no-deps -T app sh -c 'rm -rf /var/lib/supportdesk/storage/* && tar -xzf - -C /var/lib/supportdesk/storage' < "${files_archive}"
+  fi
+
+  log "Starting application..."
+  compose up -d app proxy
+  wait_healthy
+  log "Restore completed."
+}
+
+cmd_update() {
+  local target_version="${1:-}"
+  [ -n "${target_version}" ] || err "Usage: supportdesk update <version> (explicit version tag required; never 'latest')"
+  [ "${target_version}" != "latest" ] || err "Refusing to deploy 'latest' tag. Provide an explicit release version."
+  [ -f "${ENV_FILE}" ] || err "Missing ${ENV_FILE}."
+
+  log "Current version: $(current_version) -> Target version: ${target_version}"
+  cmd_backup
+
+  sed -i.bak "s|^APP_VERSION=.*|APP_VERSION=\"${target_version}\"|" "${ENV_FILE}"
+  rm -f "${ENV_FILE}.bak"
+
+  compose pull app || true
+  compose up -d --build app proxy
+  wait_healthy
+  log "Update to version ${target_version} completed."
+}
+
+cmd_status() {
+  compose ps
+  compose exec -T app wget -qO- http://127.0.0.1:3000/api/health/ready || true
+  echo ""
+}
+
+cmd_logs() {
+  compose logs -f --tail=100 "${1:-app}"
+}
+
+cmd_version() {
+  printf '%s\n' "$(current_version)"
+}
+
+case "${1:-}" in
+  install) cmd_install ;;
+  update) shift; cmd_update "${1:-}" ;;
+  backup) cmd_backup ;;
+  restore) shift; cmd_restore "${1:-}" "${2:-}" ;;
+  status) cmd_status ;;
+  logs) shift; cmd_logs "${1:-app}" ;;
+  version) cmd_version ;;
+  *)
+    cat <<EOF
+Usage: supportdesk <command>
+  install                     Verify environment, generate secrets, start Docker stack
+  update <version>            Backup DB & storage, deploy explicit version, run migrations, verify health
+  backup                      Create compressed PostgreSQL & persistent storage backups
+  restore <db.sql.gz> [files] Interactive restore from backup archives
+  status                      Show container and readiness status
+  logs [service]              Tail logs for a service (default: app)
+  version                     Print configured application version
+EOF
+    exit 1
+    ;;
+esac

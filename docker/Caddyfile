@@ -1,0 +1,19 @@
+{$DOMAIN_NAME:localhost} {
+  encode zstd gzip
+
+  request_body {
+    max_size 25MB
+  }
+
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "DENY"
+    Referrer-Policy "strict-origin-when-cross-origin"
+    -Server
+  }
+
+  reverse_proxy app:3000 {
+    header_up X-Real-IP {remote_host}
+  }
+}
