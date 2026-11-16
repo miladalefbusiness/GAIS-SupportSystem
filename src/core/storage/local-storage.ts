@@ -42,6 +42,11 @@ export class LocalDiskStorageDriver implements StorageDriver {
     return { storageKey, byteSize: data.byteLength };
   }
 
+  async get(storageKey: string): Promise<Buffer> {
+    const filePath = this.resolveSafePath(storageKey);
+    return fs.readFile(filePath);
+  }
+
   async getStream(storageKey: string): Promise<Readable> {
     const filePath = this.resolveSafePath(storageKey);
     await fs.access(filePath);

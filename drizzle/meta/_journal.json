@@ -8,6 +8,34 @@
       "when": 1794753086342,
       "tag": "0000_handy_smiling_tiger",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1794760136847,
+      "tag": "0001_last_starfox",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794772163633,
+      "tag": "0002_crazy_oracle",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794803248367,
+      "tag": "0003_jazzy_squadron_sinister",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794806928735,
+      "tag": "0004_grey_mindworm",
+      "breakpoints": true
     }
   ]
 }

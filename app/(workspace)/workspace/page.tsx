@@ -1,34 +1,50 @@
-import { desc, sql } from 'drizzle-orm';
+import { desc, eq, sql } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
-import { WorkspaceShell, type WorkspaceOverviewData } from '@/components/workspace/WorkspaceShell';
+import { OverviewPanel } from '@/components/workspace/OverviewPanel';
 import { getCurrentSession } from '@/src/core/auth/auth.ts';
 import { hasPermission } from '@/src/core/auth/rbac.ts';
 import { getStorageDriver } from '@/src/core/storage/local-storage.ts';
 import { db } from '@/src/db/index.ts';
-import { auditLogs, roles, storageQuotas, users } from '@/src/db/schema.ts';
+import {
+  auditLogs,
+  departments,
+  operatorAvailability,
+  roles,
+  storageQuotas,
+  users,
+} from '@/src/db/schema.ts';
 
 export const dynamic = 'force-dynamic';
 
 export default async function WorkspacePage() {
   const session = await getCurrentSession();
-  if (!session) {
-    redirect('/login');
-  }
-  if (session.user.mustChangePassword) {
-    redirect('/auth/change-password');
-  }
+  if (!session) redirect('/login');
+  if (session.user.mustChangePassword) redirect('/auth/change-password');
 
   const canViewAudit = hasPermission(session.access, 'admin:audit:view');
   const canViewStorage = hasPermission(session.access, 'admin:storage:manage');
 
   let dbOk = false;
-  let counts = { users: 0, roles: 0 };
+  let counts = { users: 0, roles: 0, departments: 0 };
+  let isAvailable = true;
+
   try {
     await db.execute(sql`SELECT 1`);
     dbOk = true;
-    const [uCount] = await db.select({ c: sql<number>`count(*)::int` }).from(users);
-    const [rCount] = await db.select({ c: sql<number>`count(*)::int` }).from(roles);
-    counts = { users: uCount?.c ?? 0, roles: rCount?.c ?? 0 };
+    const [[uCount], [rCount], [dCount], availRow] = await Promise.all([
+      db.select({ c: sql<number>`count(*)::int` }).from(users),
+      db.select({ c: sql<number>`count(*)::int` }).from(roles),
+      db.select({ c: sql<number>`count(*)::int` }).from(departments),
+      db.query.operatorAvailability.findFirst({
+        where: eq(operatorAvailability.userId, session.user.id),
+      }),
+    ]);
+    counts = {
+      users: uCount?.c ?? 0,
+      roles: rCount?.c ?? 0,
+      departments: dCount?.c ?? 0,
+    };
+    isAvailable = availRow?.isAvailable ?? true;
   } catch {
     dbOk = false;
   }
@@ -54,45 +70,50 @@ export default async function WorkspacePage() {
         .limit(12)
     : [];
 
-  const data: WorkspaceOverviewData = {
-    user: {
-      id: session.user.id,
-      username: session.user.username,
-      name: session.user.name,
-      email: session.user.email,
-      authMethod: session.authMethod,
-      roles: session.access.roles,
-      permissions: session.access.permissions,
-    },
-    foundation: {
-      phase: 1,
-      version: process.env.APP_VERSION || '0.1.0',
-      databaseOk: dbOk,
-      counts,
-      storage: storageHealth
-        ? {
-            ok: storageHealth.ok,
-            driver: storageHealth.driver,
-            writable: storageHealth.writable,
-          }
-        : null,
-      quotas: quotas.map((q) => ({
-        id: q.id,
-        scopeType: q.scopeType,
-        driver: q.driver,
-        maxBytes: q.maxBytes,
-        usedBytes: q.usedBytes,
-      })),
-    },
-    recentAudit: auditRows.map((r) => ({
-      id: r.id,
-      action: r.action,
-      actorType: r.actorType,
-      targetType: r.targetType,
-      ipAddress: r.ipAddress,
-      createdAt: r.createdAt.toISOString(),
-    })),
-  };
-
-  return <WorkspaceShell data={data} />;
+  return (
+    <OverviewPanel
+      user={{
+        id: session.user.id,
+        username: session.user.username,
+        name: session.user.name,
+        email: session.user.email,
+        authMethod: session.authMethod,
+        isAvailable,
+        roles: session.access.roles,
+        permissions: session.access.permissions,
+        departments: session.access.departments.map((d) => ({
+          departmentId: d.departmentId,
+          slug: d.slug,
+          nameFa: d.nameFa,
+          isManager: d.isManager,
+        })),
+      }}
+      foundation={{
+        databaseOk: dbOk,
+        counts,
+        storage: storageHealth
+          ? {
+              ok: storageHealth.ok,
+              driver: storageHealth.driver,
+              writable: storageHealth.writable,
+            }
+          : null,
+        quotas: quotas.map((q) => ({
+          id: q.id,
+          scopeType: q.scopeType,
+          driver: q.driver,
+          maxBytes: q.maxBytes,
+          usedBytes: q.usedBytes,
+        })),
+      }}
+      recentAudit={auditRows.map((r) => ({
+        id: r.id,
+        action: r.action,
+        actorType: r.actorType,
+        targetType: r.targetType,
+        ipAddress: r.ipAddress,
+        createdAt: r.createdAt.toISOString(),
+      }))}
+    />
+  );
 }

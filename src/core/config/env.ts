@@ -57,3 +57,32 @@ export function getAuthSecret(): string {
   }
   return 'dev-only-ephemeral-secret-change-in-production-32chars';
 }
+
+export function getAppEncryptionKey(): string {
+  const raw = process.env.APP_ENCRYPTION_KEY;
+  if (raw && raw.trim().length >= 32) {
+    return raw.trim();
+  }
+  if (process.env.NODE_ENV === 'production') {
+    if (process.env.K_SERVICE && process.env.SQL_PASSWORD) {
+      return `enc-${process.env.SQL_PASSWORD}-${process.env.APPLET_ID || 'supportdesk'}`;
+    }
+    throw new Error('APP_ENCRYPTION_KEY must be configured with at least 32 characters in production.');
+  }
+  return 'dev-only-aes256-encryption-key-change-in-production-64chars';
+}
+
+export function getAppHmacKey(): string {
+  const raw = process.env.APP_HMAC_KEY;
+  if (raw && raw.trim().length >= 32) {
+    return raw.trim();
+  }
+  if (process.env.NODE_ENV === 'production') {
+    if (process.env.K_SERVICE && process.env.SQL_PASSWORD) {
+      return `hmac-${process.env.SQL_PASSWORD}-${process.env.APPLET_ID || 'supportdesk'}`;
+    }
+    throw new Error('APP_HMAC_KEY must be configured with at least 32 characters in production.');
+  }
+  return 'dev-only-hmac256-lookup-key-change-in-production-64chars';
+}
+

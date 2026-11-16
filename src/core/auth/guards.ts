@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getCurrentSession, type AuthenticatedSession } from './auth.ts';
-import { hasPermission } from './rbac.ts';
+import { canAccessDepartment, hasPermission } from './rbac.ts';
 
 export type GuardResult =
   | { ok: true; session: AuthenticatedSession }
@@ -52,6 +52,54 @@ export async function requirePermission(
         {
           error: 'شما مجوز لازم برای انجام این عملیات را ندارید.',
           code: 'FORBIDDEN',
+        },
+        { status: 403 }
+      ),
+    };
+  }
+
+  return authResult;
+}
+
+export async function requireAnyPermission(
+  permissionKeys: string[]
+): Promise<GuardResult> {
+  const authResult = await requireAuth();
+  if (!authResult.ok) return authResult;
+
+  const allowed = permissionKeys.some((key) =>
+    hasPermission(authResult.session.access, key)
+  );
+  if (!allowed) {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        {
+          error: 'شما مجوز لازم برای انجام این عملیات را ندارید.',
+          code: 'FORBIDDEN',
+        },
+        { status: 403 }
+      ),
+    };
+  }
+
+  return authResult;
+}
+
+export async function requireDepartmentAccess(
+  departmentId: string,
+  requiredPermission = 'desk:workspace:access'
+): Promise<GuardResult> {
+  const authResult = await requirePermission(requiredPermission);
+  if (!authResult.ok) return authResult;
+
+  if (!canAccessDepartment(authResult.session.access, departmentId)) {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        {
+          error: 'دسترسی به این دپارتمان برای حساب کاربری شما مجاز نیست.',
+          code: 'DEPARTMENT_ACCESS_DENIED',
         },
         { status: 403 }
       ),

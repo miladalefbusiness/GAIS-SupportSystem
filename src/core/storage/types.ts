@@ -16,6 +16,7 @@ export interface StorageHealthResult {
 export interface StorageDriver {
   readonly driverName: 'local' | 's3';
   put(storageKey: string, data: Buffer): Promise<StoragePutResult>;
+  get(storageKey: string): Promise<Buffer>;
   getStream(storageKey: string): Promise<Readable>;
   exists(storageKey: string): Promise<boolean>;
   delete(storageKey: string): Promise<void>;
