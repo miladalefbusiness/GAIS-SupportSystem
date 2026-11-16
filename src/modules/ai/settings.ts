@@ -47,6 +47,12 @@ export interface SafeAiProviderView {
   maxOutputTokens: number;
   temperature: string;
   globalEnabled: boolean;
+  rerankerMode: 'none' | 'cross_feature' | 'llm' | 'http_cross_encoder';
+  rerankerEndpointUrl: string | null;
+  cragMaxIterations: number;
+  cragMaxModelCalls: number;
+  cragEnableLlmJudge: boolean;
+  enableLlmQueryTransform: boolean;
   lastTestedAt: string | null;
   lastTestOk: boolean | null;
   lastTestMessage: string | null;
@@ -63,6 +69,26 @@ export interface InternalAiProviderRuntimeConfig {
   maxOutputTokens: number;
   temperature: number;
   globalEnabled: boolean;
+  rerankerMode?: 'none' | 'cross_feature' | 'llm' | 'http_cross_encoder';
+  rerankerEndpointUrl?: string | null;
+  cragMaxIterations?: number;
+  cragMaxModelCalls?: number;
+  cragEnableLlmJudge?: boolean;
+  enableLlmQueryTransform?: boolean;
+}
+
+function normalizeRerankerMode(
+  raw: string | null | undefined
+): 'none' | 'cross_feature' | 'llm' | 'http_cross_encoder' {
+  if (
+    raw === 'none' ||
+    raw === 'cross_feature' ||
+    raw === 'llm' ||
+    raw === 'http_cross_encoder'
+  ) {
+    return raw;
+  }
+  return 'cross_feature';
 }
 
 export async function getSafeAiProviderSettings(): Promise<SafeAiProviderView> {
@@ -92,6 +118,12 @@ export async function getSafeAiProviderSettings(): Promise<SafeAiProviderView> {
       maxOutputTokens: 1024,
       temperature: '0.1',
       globalEnabled: hasEnvGeminiKey || Boolean(process.env.AI_API_KEY?.trim()),
+      rerankerMode: 'cross_feature',
+      rerankerEndpointUrl: null,
+      cragMaxIterations: 2,
+      cragMaxModelCalls: 2,
+      cragEnableLlmJudge: false,
+      enableLlmQueryTransform: false,
       lastTestedAt: null,
       lastTestOk: null,
       lastTestMessage: null,
@@ -112,6 +144,12 @@ export async function getSafeAiProviderSettings(): Promise<SafeAiProviderView> {
     maxOutputTokens: row.maxOutputTokens,
     temperature: row.temperature,
     globalEnabled: row.globalEnabled,
+    rerankerMode: normalizeRerankerMode(row.rerankerMode),
+    rerankerEndpointUrl: row.rerankerEndpointUrl ?? null,
+    cragMaxIterations: row.cragMaxIterations ?? 2,
+    cragMaxModelCalls: row.cragMaxModelCalls ?? 2,
+    cragEnableLlmJudge: row.cragEnableLlmJudge ?? false,
+    enableLlmQueryTransform: row.enableLlmQueryTransform ?? false,
     lastTestedAt: row.lastTestedAt ? row.lastTestedAt.toISOString() : null,
     lastTestOk: row.lastTestOk,
     lastTestMessage: row.lastTestMessage,
@@ -140,6 +178,12 @@ export async function getInternalAiProviderRuntimeConfig(): Promise<InternalAiPr
       maxOutputTokens: 1024,
       temperature: 0.1,
       globalEnabled: Boolean(bootstrapKey),
+      rerankerMode: 'cross_feature',
+      rerankerEndpointUrl: null,
+      cragMaxIterations: 2,
+      cragMaxModelCalls: 2,
+      cragEnableLlmJudge: false,
+      enableLlmQueryTransform: false,
     };
   }
 
@@ -168,6 +212,12 @@ export async function getInternalAiProviderRuntimeConfig(): Promise<InternalAiPr
     maxOutputTokens: row.maxOutputTokens,
     temperature: Number.isFinite(parsedTemp) ? parsedTemp : 0.1,
     globalEnabled: row.globalEnabled,
+    rerankerMode: normalizeRerankerMode(row.rerankerMode),
+    rerankerEndpointUrl: row.rerankerEndpointUrl ?? null,
+    cragMaxIterations: row.cragMaxIterations ?? 2,
+    cragMaxModelCalls: row.cragMaxModelCalls ?? 2,
+    cragEnableLlmJudge: row.cragEnableLlmJudge ?? false,
+    enableLlmQueryTransform: row.enableLlmQueryTransform ?? false,
   };
 }
 
@@ -184,6 +234,12 @@ export async function upsertAiProviderSettings(params: {
     maxOutputTokens: number;
     temperature: string;
     globalEnabled: boolean;
+    rerankerMode?: 'none' | 'cross_feature' | 'llm' | 'http_cross_encoder';
+    rerankerEndpointUrl?: string | null;
+    cragMaxIterations?: number;
+    cragMaxModelCalls?: number;
+    cragEnableLlmJudge?: boolean;
+    enableLlmQueryTransform?: boolean;
   };
   actorUserId: string;
   ipAddress: string | null;
@@ -214,6 +270,20 @@ export async function upsertAiProviderSettings(params: {
     apiKeyHint = maskApiKey(params.input.apiKey);
   }
 
+  const rerankerMode = params.input.rerankerMode ?? existing?.rerankerMode ?? 'cross_feature';
+  const rerankerEndpointUrl =
+    params.input.rerankerEndpointUrl !== undefined
+      ? params.input.rerankerEndpointUrl
+      : existing?.rerankerEndpointUrl ?? null;
+  const cragMaxIterations =
+    params.input.cragMaxIterations ?? existing?.cragMaxIterations ?? 2;
+  const cragMaxModelCalls =
+    params.input.cragMaxModelCalls ?? existing?.cragMaxModelCalls ?? 2;
+  const cragEnableLlmJudge =
+    params.input.cragEnableLlmJudge ?? existing?.cragEnableLlmJudge ?? false;
+  const enableLlmQueryTransform =
+    params.input.enableLlmQueryTransform ?? existing?.enableLlmQueryTransform ?? false;
+
   await db
     .insert(aiProviderSettings)
     .values({
@@ -229,6 +299,12 @@ export async function upsertAiProviderSettings(params: {
       maxOutputTokens: params.input.maxOutputTokens,
       temperature: params.input.temperature,
       globalEnabled: params.input.globalEnabled,
+      rerankerMode,
+      rerankerEndpointUrl,
+      cragMaxIterations,
+      cragMaxModelCalls,
+      cragEnableLlmJudge,
+      enableLlmQueryTransform,
       updatedBy: params.actorUserId,
       updatedAt: new Date(),
     })
@@ -246,6 +322,12 @@ export async function upsertAiProviderSettings(params: {
         maxOutputTokens: params.input.maxOutputTokens,
         temperature: params.input.temperature,
         globalEnabled: params.input.globalEnabled,
+        rerankerMode,
+        rerankerEndpointUrl,
+        cragMaxIterations,
+        cragMaxModelCalls,
+        cragEnableLlmJudge,
+        enableLlmQueryTransform,
         updatedBy: params.actorUserId,
         updatedAt: new Date(),
       },

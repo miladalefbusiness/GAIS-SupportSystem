@@ -5,10 +5,14 @@ import {
   BarChart3,
   CheckCircle2,
   FileSearch,
+  FlaskConical,
+  Loader2,
+  Play,
   RotateCcw,
   Search,
   ShieldAlert,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -20,6 +24,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toPersianDigits } from '@/src/lib/jalali';
+import type { RagEvaluationRunReport } from '@/src/modules/rag/evaluation/suite';
 
 export interface AiUsageLogViewItem {
   id: string;
@@ -46,7 +51,11 @@ export interface RetrievalRecordViewItem {
     title: string;
     score: number;
     snippet: string;
+    documentVersion?: number | null;
+    pageNumber?: number | null;
+    sectionTitle?: string | null;
   }>;
+  traceJson?: Record<string, unknown>;
   topScore: number;
   abstained: boolean;
   createdAt: string;
@@ -82,12 +91,18 @@ function formatDateTimeFa(iso: string): string {
 export function AiReportsViewer({
   usageLogs,
   retrievalRecords,
+  initialEvaluationRuns = [],
 }: {
   usageLogs: AiUsageLogViewItem[];
   retrievalRecords: RetrievalRecordViewItem[];
+  initialEvaluationRuns?: RagEvaluationRunReport[];
 }) {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [evalRuns, setEvalRuns] = useState<RagEvaluationRunReport[]>(
+    initialEvaluationRuns
+  );
+  const [runningEval, setRunningEval] = useState(false);
 
   const successCount = usageLogs.filter((l) => l.status === 'success').length;
   const abstainedCount = usageLogs.filter((l) => l.status === 'abstained').length;
@@ -123,14 +138,40 @@ export function AiReportsViewer({
 
   const hasFilters = Boolean(search.trim() || statusFilter !== 'all');
 
+  async function handleRunEvaluation() {
+    setRunningEval(true);
+    try {
+      const res = await fetch('/api/admin/ai/evaluation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error || 'اجرای ارزیابی ۸ دسته‌ای ناموفق بود.');
+        return;
+      }
+      if (data.report) {
+        setEvalRuns((prev) => [data.report, ...prev]);
+        toast.success(
+          `ارزیابی کامل شد: ${toPersianDigits(data.report.passedCases)} از ${toPersianDigits(data.report.totalCases)} سناریو پاس شد.`
+        );
+      }
+    } catch {
+      toast.error('خطای شبکه هنگام اجرای ارزیابی RAG.');
+    } finally {
+      setRunningEval(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="space-y-1">
         <h1 className="text-2xl font-bold text-slate-900">
-          گزارش‌های هوش مصنوعی و ردیابی منابع
+          گزارش‌های هوش مصنوعی، ردیابی CRAG و ارزیابی RAG
         </h1>
         <p className="text-sm text-slate-600">
-          بررسی دقت بازیابی دانش، موارد عدم قطعیت، نرخ خطای ارائه‌دهنده و درخواست‌های ارتباط با اپراتور
+          پایش دقیق راهبرد بازیابی، چرخه‌های اصلاحی CRAG، وفاداری پاسخ و اجرای بنچمارک ۸ دسته‌ای کیفیت RAG
         </p>
       </div>
 
@@ -215,11 +256,15 @@ export function AiReportsViewer({
         <TabsList>
           <TabsTrigger value="retrievals" className="gap-1.5">
             <FileSearch className="h-4 w-4" />
-            <span>ردیابی منابع بازیابی‌شده ({toPersianDigits(filteredRetrievals.length)})</span>
+            <span>ردیابی بازیابی و CRAG ({toPersianDigits(filteredRetrievals.length)})</span>
           </TabsTrigger>
           <TabsTrigger value="usage" className="gap-1.5">
             <BarChart3 className="h-4 w-4" />
             <span>گزارش فراخوانی مدل ({toPersianDigits(filteredUsageLogs.length)})</span>
+          </TabsTrigger>
+          <TabsTrigger value="evaluation" className="gap-1.5">
+            <FlaskConical className="h-4 w-4" />
+            <span>ارزیابی و بنچمارک RAG ({toPersianDigits(evalRuns.length)})</span>
           </TabsTrigger>
         </TabsList>
 
@@ -233,54 +278,104 @@ export function AiReportsViewer({
               </CardContent>
             </Card>
           ) : (
-            filteredRetrievals.map((rec) => (
-              <Card key={rec.id}>
-                <CardContent className="p-4 space-y-2.5">
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <div className="flex flex-wrap items-center gap-2">
-                      {rec.abstained ? (
-                        <ShieldAlert className="h-4 w-4 text-amber-600 shrink-0" />
-                      ) : (
-                        <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
-                      )}
-                      <span className="font-semibold text-slate-900">
-                        دپارتمان: {rec.departmentNameFa}
-                      </span>
-                      <span className="text-slate-400">·</span>
-                      <span className="tabular-nums text-slate-600">
-                        بالاترین امتیاز: {toPersianDigits(rec.topScore)}
+            filteredRetrievals.map((rec) => {
+              const trace = rec.traceJson || {};
+              const strategy = typeof trace.strategy === 'string' ? trace.strategy : null;
+              const cragDecision =
+                typeof trace.cragDecision === 'string' ? trace.cragDecision : null;
+              const correctiveIterations =
+                typeof trace.correctiveIterationsUsed === 'number'
+                  ? trace.correctiveIterationsUsed
+                  : null;
+              const faithfulnessScore =
+                typeof trace.faithfulnessScore === 'number'
+                  ? trace.faithfulnessScore
+                  : null;
+              const totalLatencyMs =
+                typeof trace.totalLatencyMs === 'number' ? trace.totalLatencyMs : null;
+
+              return (
+                <Card key={rec.id}>
+                  <CardContent className="p-4 space-y-2.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <div className="flex flex-wrap items-center gap-2">
+                        {rec.abstained ? (
+                          <ShieldAlert className="h-4 w-4 text-amber-600 shrink-0" />
+                        ) : (
+                          <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                        )}
+                        <span className="font-semibold text-slate-900">
+                          دپارتمان: {rec.departmentNameFa}
+                        </span>
+                        <span className="text-slate-400">·</span>
+                        <span className="tabular-nums text-slate-600">
+                          بالاترین امتیاز: {toPersianDigits(rec.topScore)}
+                        </span>
+                        {strategy && (
+                          <>
+                            <span className="text-slate-400">·</span>
+                            <span className="font-[family-name:var(--font-mono)] text-blue-700">
+                              {strategy}
+                            </span>
+                          </>
+                        )}
+                        {cragDecision && (
+                          <>
+                            <span className="text-slate-400">·</span>
+                            <span className="font-[family-name:var(--font-mono)] text-slate-700">
+                              CRAG: {cragDecision}
+                              {correctiveIterations ? ` (${correctiveIterations} اصلاح)` : ''}
+                            </span>
+                          </>
+                        )}
+                        {faithfulnessScore !== null && (
+                          <>
+                            <span className="text-slate-400">·</span>
+                            <span className="text-emerald-700 tabular-nums">
+                              وفاداری: {toPersianDigits(faithfulnessScore)}٪
+                            </span>
+                          </>
+                        )}
+                        {totalLatencyMs !== null && (
+                          <span className="text-slate-500 tabular-nums">
+                            ({toPersianDigits(totalLatencyMs)} ms)
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-slate-500 tabular-nums">
+                        {formatDateTimeFa(rec.createdAt)}
                       </span>
                     </div>
-                    <span className="text-slate-500 tabular-nums">
-                      {formatDateTimeFa(rec.createdAt)}
-                    </span>
-                  </div>
 
-                  <p className="text-sm text-slate-800">پرسش: {rec.queryText}</p>
+                    <p className="text-sm text-slate-800">پرسش: {rec.queryText}</p>
 
-                  {rec.sourcesJson.length > 0 && (
-                    <div className="space-y-1.5 border-t border-slate-100 pt-2">
-                      {rec.sourcesJson.map((s) => (
-                        <div
-                          key={s.sourceId}
-                          className="rounded-md bg-slate-50 border border-slate-200 px-3 py-2 text-xs space-y-0.5"
-                        >
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <span className="font-medium text-slate-900">
-                              [{s.sourceType === 'qa' ? 'پرسش‌وپاسخ' : 'قطعه سند'}] {s.title}
-                            </span>
-                            <span className="text-blue-700 font-medium tabular-nums">
-                              امتیاز: {toPersianDigits(s.score)}
-                            </span>
+                    {rec.sourcesJson.length > 0 && (
+                      <div className="space-y-1.5 border-t border-slate-100 pt-2">
+                        {rec.sourcesJson.map((s) => (
+                          <div
+                            key={s.sourceId}
+                            className="rounded-md bg-slate-50 border border-slate-200 px-3 py-2 text-xs space-y-0.5"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="font-medium text-slate-900">
+                                [{s.sourceType === 'qa' ? 'پرسش‌وپاسخ' : 'قطعه سند'}] {s.title}
+                                {s.documentVersion ? ` · نسخه ${toPersianDigits(s.documentVersion)}` : ''}
+                                {s.pageNumber ? ` · صفحه ${toPersianDigits(s.pageNumber)}` : ''}
+                                {s.sectionTitle ? ` · ${s.sectionTitle}` : ''}
+                              </span>
+                              <span className="text-blue-700 font-medium tabular-nums">
+                                امتیاز: {toPersianDigits(s.score)}
+                              </span>
+                            </div>
+                            <p className="text-slate-600 line-clamp-2">{s.snippet}</p>
                           </div>
-                          <p className="text-slate-600 line-clamp-2">{s.snippet}</p>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            ))
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              );
+            })
           )}
         </TabsContent>
 
@@ -349,6 +444,121 @@ export function AiReportsViewer({
                 </table>
               </CardContent>
             </Card>
+          )}
+        </TabsContent>
+
+        <TabsContent value="evaluation" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <CardTitle className="text-base">
+                    مجموعه بنچمارک ۸ دسته‌ای ارزیابی RAG و CRAG
+                  </CardTitle>
+                  <CardDescription>
+                    سنجش Recall@K، Precision@K، MRR، nDCG، وفاداری پاسخ، دقت استناد و ایمنی در برابر نشت بین دپارتمان‌ها و Prompt Injection
+                  </CardDescription>
+                </div>
+                <Button
+                  type="button"
+                  disabled={runningEval}
+                  onClick={handleRunEvaluation}
+                >
+                  {runningEval ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Play className="h-4 w-4" />
+                  )}
+                  <span>اجرای بنچمارک ۸ دسته‌ای</span>
+                </Button>
+              </div>
+            </CardHeader>
+          </Card>
+
+          {evalRuns.length === 0 ? (
+            <Card>
+              <CardContent className="p-8 text-center text-sm text-slate-500">
+                هنوز هیچ اجرای ارزیابی RAG ثبت نشده است. برای سنجش دقیق عملکرد موتور، دکمه «اجرای بنچمارک ۸ دسته‌ای» را بزنید.
+              </CardContent>
+            </Card>
+          ) : (
+            evalRuns.map((run) => (
+              <Card key={run.id}>
+                <CardHeader className="pb-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <CardTitle className="text-sm font-semibold">
+                      {run.runLabel} — {toPersianDigits(run.passedCases)} /{' '}
+                      {toPersianDigits(run.totalCases)} موفق
+                    </CardTitle>
+                    <span className="text-xs text-slate-500 tabular-nums">
+                      {formatDateTimeFa(run.createdAt)}
+                    </span>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-2.5">
+                      <div className="text-slate-500">Recall@K / Precision@K</div>
+                      <div className="font-semibold text-slate-900 tabular-nums mt-0.5">
+                        {run.recallAtK} / {run.precisionAtK}
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-2.5">
+                      <div className="text-slate-500">MRR / nDCG</div>
+                      <div className="font-semibold text-slate-900 tabular-nums mt-0.5">
+                        {run.mrr} / {run.ndcg}
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-2.5">
+                      <div className="text-slate-500">وفاداری / ارتباط پاسخ</div>
+                      <div className="font-semibold text-emerald-700 tabular-nums mt-0.5">
+                        {toPersianDigits(Math.round(run.faithfulnessAvg))}٪ /{' '}
+                        {toPersianDigits(Math.round(run.answerRelevanceAvg))}٪
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-2.5">
+                      <div className="text-slate-500">دقت استناد / امتناع امن</div>
+                      <div className="font-semibold text-blue-700 tabular-nums mt-0.5">
+                        {toPersianDigits(Math.round(run.citationCorrectnessRate * 100))}٪ /{' '}
+                        {toPersianDigits(Math.round(run.abstentionAccuracyRate * 100))}٪
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-2.5">
+                      <div className="text-slate-500">ادعای بی‌اساس / تأخیر</div>
+                      <div className="font-semibold text-slate-900 tabular-nums mt-0.5">
+                        {toPersianDigits(Math.round(run.unsupportedClaimRate * 100))}٪ ·{' '}
+                        {toPersianDigits(run.avgLatencyMs)} ms
+                      </div>
+                    </div>
+                  </div>
+
+                  {run.results.length > 0 && (
+                    <div className="space-y-1.5">
+                      {run.results.map((item) => (
+                        <div
+                          key={item.id}
+                          className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            {item.passed ? (
+                              <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                            ) : (
+                              <ShieldAlert className="h-4 w-4 text-red-600 shrink-0" />
+                            )}
+                            <span className="font-medium text-slate-900">{item.titleFa}</span>
+                            <span className="text-slate-400">·</span>
+                            <span className="text-slate-600 truncate">{item.reasonFa}</span>
+                          </div>
+                          <span className="font-[family-name:var(--font-mono)] text-[11px] text-slate-500 tabular-nums">
+                            {item.actualOutcome} · CRAG:{item.cragDecision} · {item.latencyMs}ms
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            ))
           )}
         </TabsContent>
       </Tabs>

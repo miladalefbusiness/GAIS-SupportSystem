@@ -10,6 +10,7 @@ import {
 import { getCurrentSession } from '@/src/core/auth/auth.ts';
 import { hasPermission } from '@/src/core/auth/rbac.ts';
 import { listAiReportsAdmin } from '@/src/modules/ai/chat.ts';
+import { listRagEvaluationRuns } from '@/src/modules/rag/evaluation/suite.ts';
 
 export const dynamic = 'force-dynamic';
 
@@ -39,12 +40,16 @@ export default async function AdminAiReportsPage() {
     );
   }
 
-  const reports = await listAiReportsAdmin();
+  const [reports, evaluationRuns] = await Promise.all([
+    listAiReportsAdmin(),
+    listRagEvaluationRuns(15),
+  ]);
 
   return (
     <AiReportsViewer
       usageLogs={reports.usageLogs}
       retrievalRecords={reports.retrievalRecords}
+      initialEvaluationRuns={evaluationRuns}
     />
   );
 }

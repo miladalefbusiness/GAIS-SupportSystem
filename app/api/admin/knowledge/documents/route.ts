@@ -2,7 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { extractRequestContext } from '@/src/core/audit/audit.ts';
 import { requireAnyPermission, requirePermission } from '@/src/core/auth/guards.ts';
 import { logger } from '@/src/core/logging/logger.ts';
-import { kbScopeSchema } from '@/src/modules/knowledge/schemas.ts';
+import {
+  kbClassificationSchema,
+  kbScopeSchema,
+  kbValidityStatusSchema,
+} from '@/src/modules/knowledge/schemas.ts';
 import {
   listKnowledgeDocumentsAdmin,
   uploadAndIndexDocument,
@@ -17,7 +21,11 @@ function mapExtractionErrorFa(code: string): { status: number; message: string }
     case 'FILE_TOO_LARGE':
       return { status: 413, message: 'حجم فایل از سقف مجاز (۲۵ مگابایت) بیشتر است.' };
     case 'UNSUPPORTED_FILE_TYPE':
-      return { status: 400, message: 'فرمت فایل مجاز نیست. فقط PDF، DOCX، TXT و Markdown مجاز است.' };
+      return {
+        status: 400,
+        message:
+          'فرمت فایل مجاز نیست. فقط PDF، DOCX، TXT، Markdown و XLSX مجاز است.',
+      };
     case 'INVALID_FILE_SIGNATURE':
       return { status: 400, message: 'محتوای واقعی فایل با پسوند آن مطابقت ندارد.' };
     case 'EXTRACTED_TEXT_EMPTY':
@@ -83,9 +91,40 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const classificationRaw = formData.get('classification');
+    let classification:
+      | 'public_org'
+      | 'department'
+      | 'internal_restricted'
+      | undefined;
+    if (typeof classificationRaw === 'string' && classificationRaw.trim()) {
+      const parsedClass = kbClassificationSchema.safeParse(classificationRaw.trim());
+      if (!parsedClass.success) {
+        return NextResponse.json(
+          { error: 'طبقه‌بندی سند نامعتبر است.' },
+          { status: 400 }
+        );
+      }
+      classification = parsedClass.data;
+    }
+
+    const validityRaw = formData.get('validityStatus');
+    let validityStatus: 'current' | 'superseded' | 'expired' | undefined;
+    if (typeof validityRaw === 'string' && validityRaw.trim()) {
+      const parsedVal = kbValidityStatusSchema.safeParse(validityRaw.trim());
+      if (!parsedVal.success) {
+        return NextResponse.json(
+          { error: 'وضعیت اعتبار سند نامعتبر است.' },
+          { status: 400 }
+        );
+      }
+      validityStatus = parsedVal.data;
+    }
+
     const collectionIdRaw = String(formData.get('collectionId') || '').trim();
     const collectionId = collectionIdRaw.length > 0 ? collectionIdRaw : null;
     const isEnabled = String(formData.get('isEnabled') ?? 'true') !== 'false';
+    const isAsync = String(formData.get('async') ?? 'false') === 'true';
 
     let departmentIds: string[] = [];
     const deptRaw = formData.get('departmentIds');
@@ -111,14 +150,17 @@ export async function POST(req: NextRequest) {
       titleFa,
       collectionId,
       scope: parsedScope.data,
+      classification,
+      validityStatus,
       isEnabled,
       departmentIds,
       actorUserId: guard.session.user.id,
       ipAddress,
       userAgent,
+      async: isAsync,
     });
 
-    return NextResponse.json({ document: result }, { status: 201 });
+    return NextResponse.json({ document: result }, { status: isAsync ? 202 : 201 });
   } catch (error) {
     const code = error instanceof Error ? error.message : 'EXTRACTION_FAILED';
     const mapped = mapExtractionErrorFa(code);

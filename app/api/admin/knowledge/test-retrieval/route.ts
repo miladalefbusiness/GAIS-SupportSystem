@@ -3,8 +3,8 @@ import { requireAnyPermission } from '@/src/core/auth/guards.ts';
 import { logger } from '@/src/core/logging/logger.ts';
 import { createAiProviderAdapter } from '@/src/modules/ai/provider.ts';
 import { getInternalAiProviderRuntimeConfig } from '@/src/modules/ai/settings.ts';
-import { retrieveAuthorizedKnowledge } from '@/src/modules/knowledge/retrieval.ts';
 import { testRetrievalSchema } from '@/src/modules/knowledge/schemas.ts';
+import { runAdvancedRetrieval } from '@/src/modules/rag/retrieval/engine.ts';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,15 +23,30 @@ export async function POST(req: NextRequest) {
     }
 
     const runtimeConfig = await getInternalAiProviderRuntimeConfig();
-    const queryEmbedding = runtimeConfig.embeddingModel
-      ? await createAiProviderAdapter(runtimeConfig).generateEmbedding(parsed.data.query)
+    const adapter = runtimeConfig.apiKey
+      ? createAiProviderAdapter(runtimeConfig)
       : null;
 
-    const result = await retrieveAuthorizedKnowledge({
+    const result = await runAdvancedRetrieval({
       departmentId: parsed.data.departmentId,
       query: parsed.data.query,
-      queryEmbedding,
-      limit: 6,
+      embeddingModel: runtimeConfig.embeddingModel,
+      adapter,
+      embedder:
+        adapter && runtimeConfig.embeddingModel
+          ? async (text: string) => {
+              try {
+                return await adapter.generateEmbedding(text);
+              } catch {
+                return null;
+              }
+            }
+          : null,
+      forcedStrategy: parsed.data.forcedStrategy ?? null,
+      rerankerMode: parsed.data.rerankerMode ?? 'cross_feature',
+      enableLlmQueryTransform: false,
+      enableParentExpansion: true,
+      finalLimit: 6,
     });
 
     return NextResponse.json(result);

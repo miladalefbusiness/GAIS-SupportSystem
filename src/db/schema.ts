@@ -3,6 +3,8 @@ import {
   type AnyPgColumn,
   bigint,
   boolean,
+  customType,
+  doublePrecision,
   index,
   integer,
   jsonb,
@@ -12,6 +14,28 @@ import {
   timestamp,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
+
+const pgVectorType = customType<{ data: number[]; driverData: string }>({
+  dataType() {
+    return 'vector';
+  },
+  toDriver(value: number[]): string {
+    return `[${value.join(',')}]`;
+  },
+  fromDriver(value: string): number[] {
+    if (!value || value === '[]') return [];
+    return value
+      .replace(/^\[|\]$/g, '')
+      .split(',')
+      .map((n) => Number(n));
+  },
+});
+
+const tsvectorType = customType<{ data: string; driverData: string }>({
+  dataType() {
+    return 'tsvector';
+  },
+});
 
 // ============================================================================
 // Phase 1 Core Tables: Users, Auth Sessions/Accounts, RBAC, Storage, Settings, Audit
@@ -362,11 +386,19 @@ export const knowledgeDocuments = pgTable(
     byteSize: bigint('byte_size', { mode: 'number' }).notNull(),
     sha256: text('sha256').notNull(),
     scope: text('scope').notNull().default('department'), // global | department | restricted
+    classification: text('classification').notNull().default('department'), // public_org | department | internal_restricted
     status: text('status').notNull().default('uploaded'), // uploaded | processing | indexed | failed | disabled
+    ingestionStage: text('ingestion_stage').notNull().default('completed'), // queued | validating | extracting | normalizing | chunking | embedding | indexing | completed | failed
+    validityStatus: text('validity_status').notNull().default('current'), // current | superseded | expired
+    supersededByDocId: text('superseded_by_doc_id'),
+    effectiveFrom: timestamp('effective_from', { withTimezone: true }),
+    effectiveUntil: timestamp('effective_until', { withTimezone: true }),
     isEnabled: boolean('is_enabled').notNull().default(true),
     version: integer('version').notNull().default(1),
     extractedText: text('extracted_text'),
     chunkCount: integer('chunk_count').notNull().default(0),
+    embeddingModelUsed: text('embedding_model_used'),
+    embeddingDimensions: integer('embedding_dimensions'),
     errorMessage: text('error_message'),
     lastIndexedAt: timestamp('last_indexed_at', { withTimezone: true }),
     uploadedBy: text('uploaded_by').references(() => users.id, { onDelete: 'set null' }),
@@ -377,6 +409,7 @@ export const knowledgeDocuments = pgTable(
     index('kb_docs_collection_idx').on(table.collectionId),
     index('kb_docs_status_idx').on(table.status, table.isEnabled),
     index('kb_docs_scope_idx').on(table.scope),
+    index('kb_docs_validity_idx').on(table.validityStatus, table.isEnabled),
   ]
 );
 
@@ -423,16 +456,64 @@ export const knowledgeChunks = pgTable(
     documentId: text('document_id')
       .notNull()
       .references(() => knowledgeDocuments.id, { onDelete: 'cascade' }),
+    documentVersion: integer('document_version').notNull().default(1),
+    parentChunkId: text('parent_chunk_id'),
+    chunkLevel: text('chunk_level').notNull().default('child'), // parent | child
     chunkIndex: integer('chunk_index').notNull(),
+    headingPath: text('heading_path'),
+    sectionTitle: text('section_title'),
+    pageNumber: integer('page_number'),
+    sheetName: text('sheet_name'),
+    chunkType: text('chunk_type').notNull().default('text'), // text | table | list | section
+    classification: text('classification').notNull().default('department'),
+    sourceRef: text('source_ref'),
+    isActive: boolean('is_active').notNull().default(true),
     content: text('content').notNull(),
     normalizedContent: text('normalized_content').notNull(),
     tokenEstimate: integer('token_estimate').notNull().default(0),
     metadataJson: jsonb('metadata_json').$type<Record<string, unknown>>(),
     embeddingJson: jsonb('embedding_json').$type<number[] | null>(),
+    embeddingModel: text('embedding_model'),
+    embeddingDimensions: integer('embedding_dimensions'),
+    searchTsv: tsvectorType('search_tsv'),
+    indexedAt: timestamp('indexed_at', { withTimezone: true }).defaultNow().notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
     index('kb_chunks_doc_idx').on(table.documentId, table.chunkIndex),
+    index('kb_chunks_active_level_idx').on(
+      table.documentId,
+      table.isActive,
+      table.chunkLevel
+    ),
+    index('kb_chunks_parent_idx').on(table.parentChunkId),
+    index('kb_chunks_search_tsv_gin_idx').using('gin', table.searchTsv),
+  ]
+);
+
+export const knowledgeChunkVectors = pgTable(
+  'knowledge_chunk_vectors',
+  {
+    chunkId: text('chunk_id')
+      .primaryKey()
+      .references(() => knowledgeChunks.id, { onDelete: 'cascade' }),
+    documentId: text('document_id')
+      .notNull()
+      .references(() => knowledgeDocuments.id, { onDelete: 'cascade' }),
+    documentVersion: integer('document_version').notNull().default(1),
+    embeddingModel: text('embedding_model').notNull(),
+    dimensions: integer('dimensions').notNull(),
+    embedding: pgVectorType('embedding').notNull(),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('kb_chunk_vecs_doc_active_idx').on(table.documentId, table.isActive),
+    index('kb_chunk_vecs_model_dim_idx').on(
+      table.embeddingModel,
+      table.dimensions,
+      table.isActive
+    ),
   ]
 );
 
@@ -452,6 +533,9 @@ export const knowledgeQaEntries = pgTable(
     status: text('status').notNull().default('published'), // draft | published | disabled
     normalizedSearchText: text('normalized_search_text').notNull(),
     embeddingJson: jsonb('embedding_json').$type<number[] | null>(),
+    embeddingModel: text('embedding_model'),
+    embeddingDimensions: integer('embedding_dimensions'),
+    searchTsv: tsvectorType('search_tsv'),
     updatedBy: text('updated_by').references(() => users.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -459,6 +543,61 @@ export const knowledgeQaEntries = pgTable(
   (table) => [
     index('kb_qa_status_scope_idx').on(table.status, table.scope),
     index('kb_qa_collection_idx').on(table.collectionId),
+    index('kb_qa_search_tsv_gin_idx').using('gin', table.searchTsv),
+  ]
+);
+
+export const knowledgeQaVectors = pgTable(
+  'knowledge_qa_vectors',
+  {
+    qaEntryId: text('qa_entry_id')
+      .primaryKey()
+      .references(() => knowledgeQaEntries.id, { onDelete: 'cascade' }),
+    embeddingModel: text('embedding_model').notNull(),
+    dimensions: integer('dimensions').notNull(),
+    embedding: pgVectorType('embedding').notNull(),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('kb_qa_vecs_model_dim_idx').on(
+      table.embeddingModel,
+      table.dimensions,
+      table.isActive
+    ),
+  ]
+);
+
+export const ragIngestionJobs = pgTable(
+  'rag_ingestion_jobs',
+  {
+    id: text('id').primaryKey(),
+    documentId: text('document_id')
+      .notNull()
+      .references(() => knowledgeDocuments.id, { onDelete: 'cascade' }),
+    jobType: text('job_type').notNull(), // ingest | replace | reprocess | reindex_embeddings
+    status: text('status').notNull().default('pending'), // pending | running | completed | failed | cancelled
+    stage: text('stage').notNull().default('queued'), // queued | validating | extracting | normalizing | chunking | embedding | indexing | completed | failed
+    targetVersion: integer('target_version').notNull().default(1),
+    attempts: integer('attempts').notNull().default(0),
+    maxAttempts: integer('max_attempts').notNull().default(3),
+    totalChunks: integer('total_chunks').notNull().default(0),
+    processedChunks: integer('processed_chunks').notNull().default(0),
+    embeddingModel: text('embedding_model'),
+    errorCode: text('error_code'),
+    errorMessage: text('error_message'),
+    payloadJson: jsonb('payload_json').$type<Record<string, unknown>>().notNull().default({}),
+    triggeredByUserId: text('triggered_by_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('rag_jobs_status_created_idx').on(table.status, table.createdAt),
+    index('rag_jobs_doc_created_idx').on(table.documentId, table.createdAt),
   ]
 );
 
@@ -491,6 +630,12 @@ export const aiProviderSettings = pgTable('ai_provider_settings', {
   maxOutputTokens: integer('max_output_tokens').notNull().default(1024),
   temperature: text('temperature').notNull().default('0.1'),
   globalEnabled: boolean('global_enabled').notNull().default(false),
+  rerankerMode: text('reranker_mode').notNull().default('cross_feature'), // none | cross_feature | llm | http_cross_encoder
+  rerankerEndpointUrl: text('reranker_endpoint_url'),
+  cragMaxIterations: integer('crag_max_iterations').notNull().default(2),
+  cragMaxModelCalls: integer('crag_max_model_calls').notNull().default(2),
+  cragEnableLlmJudge: boolean('crag_enable_llm_judge').notNull().default(false),
+  enableLlmQueryTransform: boolean('enable_llm_query_transform').notNull().default(false),
   lastTestedAt: timestamp('last_tested_at', { withTimezone: true }),
   lastTestOk: boolean('last_test_ok'),
   lastTestMessage: text('last_test_message'),
@@ -553,6 +698,28 @@ export const aiMessages = pgTable(
     abstained: boolean('abstained').notNull().default(false),
     escalationOffered: boolean('escalation_offered').notNull().default(false),
     retrievalConfidence: integer('retrieval_confidence'),
+    responseOutcome: text('response_outcome'), // verified_answer | abstain_insufficient | abstain_conflicting | clarify | provider_unavailable | prompt_injection_blocked
+    citationsJson: jsonb('citations_json')
+      .$type<
+        Array<{
+          refCode: string;
+          sourceType: 'qa' | 'document_chunk';
+          sourceId: string;
+          parentId: string;
+          title: string;
+          documentVersion: number | null;
+          validityStatus: string;
+          pageNumber: number | null;
+          sheetName: string | null;
+          sectionTitle: string | null;
+          headingPath: string | null;
+          sourceRef: string | null;
+          score: number;
+          snippet: string;
+        }>
+      >()
+      .notNull()
+      .default([]),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [index('ai_messages_conv_idx').on(table.conversationId, table.createdAt)]
@@ -580,10 +747,16 @@ export const knowledgeRetrievalRecords = pgTable(
           title: string;
           score: number;
           snippet: string;
+          documentVersion?: number | null;
+          pageNumber?: number | null;
+          sectionTitle?: string | null;
+          sheetName?: string | null;
+          sourceRef?: string | null;
         }>
       >()
       .notNull()
       .default([]),
+    traceJson: jsonb('trace_json').$type<Record<string, unknown>>().notNull().default({}),
     topScore: integer('top_score').notNull().default(0),
     abstained: boolean('abstained').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -591,6 +764,41 @@ export const knowledgeRetrievalRecords = pgTable(
   (table) => [
     index('kb_retrieval_conv_idx').on(table.conversationId),
     index('kb_retrieval_dept_idx').on(table.departmentId),
+  ]
+);
+
+export const ragEvaluationRuns = pgTable(
+  'rag_evaluation_runs',
+  {
+    id: text('id').primaryKey(),
+    departmentId: text('department_id').references(() => departments.id, {
+      onDelete: 'set null',
+    }),
+    runLabel: text('run_label').notNull(),
+    totalCases: integer('total_cases').notNull().default(0),
+    passedCases: integer('passed_cases').notNull().default(0),
+    recallAtK: doublePrecision('recall_at_k').notNull().default(0),
+    precisionAtK: doublePrecision('precision_at_k').notNull().default(0),
+    mrr: doublePrecision('mrr').notNull().default(0),
+    ndcg: doublePrecision('ndcg').notNull().default(0),
+    avgLatencyMs: integer('avg_latency_ms').notNull().default(0),
+    faithfulnessAvg: doublePrecision('faithfulness_avg').notNull().default(0),
+    answerRelevanceAvg: doublePrecision('answer_relevance_avg').notNull().default(0),
+    citationCorrectnessRate: doublePrecision('citation_correctness_rate').notNull().default(0),
+    abstentionAccuracyRate: doublePrecision('abstention_accuracy_rate').notNull().default(0),
+    unsupportedClaimRate: doublePrecision('unsupported_claim_rate').notNull().default(0),
+    resultsJson: jsonb('results_json')
+      .$type<Array<Record<string, unknown>>>()
+      .notNull()
+      .default([]),
+    triggeredByUserId: text('triggered_by_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('rag_eval_runs_created_idx').on(table.createdAt),
+    index('rag_eval_runs_dept_idx').on(table.departmentId, table.createdAt),
   ]
 );
 

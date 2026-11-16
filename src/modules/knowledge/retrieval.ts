@@ -167,7 +167,7 @@ export async function retrieveAuthorizedKnowledge(params: {
     return false;
   });
 
-  // 3. Load authorized indexed & enabled documents
+  // 3. Load authorized indexed, enabled, and currently valid documents
   const indexedDocs = await db
     .select({
       id: knowledgeDocuments.id,
@@ -181,6 +181,7 @@ export async function retrieveAuthorizedKnowledge(params: {
       and(
         eq(knowledgeDocuments.isEnabled, true),
         eq(knowledgeDocuments.status, 'indexed'),
+        eq(knowledgeDocuments.validityStatus, 'current'),
         ne(knowledgeDocuments.scope, 'restricted')
       )
     );
@@ -203,7 +204,13 @@ export async function retrieveAuthorizedKnowledge(params: {
       ? await db
           .select()
           .from(knowledgeChunks)
-          .where(inArray(knowledgeChunks.documentId, authorizedDocIdsList))
+          .where(
+            and(
+              inArray(knowledgeChunks.documentId, authorizedDocIdsList),
+              eq(knowledgeChunks.isActive, true),
+              eq(knowledgeChunks.chunkLevel, 'child')
+            )
+          )
       : [];
 
   // 4. Score Q&A entries and document chunks

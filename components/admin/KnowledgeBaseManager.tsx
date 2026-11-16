@@ -4,6 +4,7 @@ import { useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   BookOpen,
+  Cpu,
   Download,
   Edit3,
   Eye,
@@ -66,7 +67,13 @@ export interface KbDocumentItem {
   fileExtension: string;
   byteSize: number;
   scope: string;
+  classification?: string;
   status: string;
+  ingestionStage?: string;
+  validityStatus?: string;
+  supersededByDocId?: string | null;
+  embeddingModelUsed?: string | null;
+  embeddingDimensions?: number | null;
   isEnabled: boolean;
   version: number;
   chunkCount: number;
@@ -76,6 +83,35 @@ export interface KbDocumentItem {
   createdAt: string;
   updatedAt: string;
   departments: Array<{ departmentId: string; nameFa: string }>;
+}
+
+export interface KbIngestionJobItem {
+  id: string;
+  documentId: string;
+  documentTitleFa: string;
+  originalFilename: string;
+  jobType: string;
+  status: string;
+  stage: string;
+  targetVersion: number;
+  totalChunks: number;
+  processedChunks: number;
+  embeddingModel: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export interface KbEmbeddingHealth {
+  activeEmbeddingModel: string | null;
+  totalIndexedDocs: number;
+  totalQas: number;
+  mismatchedDocsCount: number;
+  unembeddedDocsCount: number;
+  mismatchedQasCount: number;
+  mismatchedDocumentIds: string[];
+  needsReindex: boolean;
 }
 
 export interface KbQaItem {
@@ -100,17 +136,74 @@ interface RetrievalTestResult {
     title: string;
     content: string;
     score: number;
+    rrfScore?: number;
+    rerankScore?: number | null;
+    lexicalRank?: number | null;
+    semanticRank?: number | null;
+    matchedBy?: string[];
     scope: string;
+    documentVersion?: number | null;
+    pageNumber?: number | null;
+    sheetName?: string | null;
+    sectionTitle?: string | null;
+    expandedFromParent?: boolean;
   }>;
   topScore: number;
   conflictDetected: boolean;
   conflictSummaryFa: string | null;
+  trace?: {
+    strategy: string;
+    strategyReasonFa: string;
+    queryTransform?: {
+      generatedQueries: Array<{ query: string; type?: string; reason: string }>;
+      identifiers?: string[];
+    };
+    lexicalDocHitCount: number;
+    lexicalQaHitCount: number;
+    semanticDocHitCount: number;
+    semanticQaHitCount: number;
+    fusedCandidateCount: number;
+    rerankMethod: string;
+    parentExpandedCount: number;
+    latencyMs: number;
+  };
 }
 
 const SCOPE_LABELS: Record<string, string> = {
   global: 'عمومی (کل سازمان)',
   department: 'اختصاصی دپارتمان',
   restricted: 'محرمانه (خارج از دسترس AI)',
+};
+
+const CLASSIFICATION_LABELS: Record<string, string> = {
+  public_org: 'عمومی سازمان',
+  department: 'اختصاصی دپارتمان',
+  internal_restricted: 'محدود / محرمانه',
+};
+
+const VALIDITY_LABELS: Record<string, string> = {
+  current: 'معتبر',
+  superseded: 'جایگزین‌شده (منسوخ)',
+  expired: 'منقضی‌شده',
+};
+
+const INGESTION_STAGE_LABELS: Record<string, string> = {
+  queued: 'در صف',
+  validating: 'اعتبارسنجی',
+  extracting: 'استخراج متن',
+  normalizing: 'نرمال‌سازی',
+  chunking: 'قطعه‌بندی',
+  embedding: 'تولید بردار',
+  indexing: 'ثبت ایندکس',
+  completed: 'تکمیل‌شده',
+  failed: 'ناموفق',
+};
+
+const JOB_TYPE_LABELS: Record<string, string> = {
+  ingest: 'بارگذاری و نمایه‌سازی',
+  replace: 'جایگزینی نسخه',
+  reprocess: 'پردازش مجدد',
+  reindex_embeddings: 'بازسازی بردارها',
 };
 
 const DOC_STATUS_LABELS: Record<string, string> = {
@@ -136,12 +229,16 @@ export function KnowledgeBaseManager({
   initialCollections,
   initialDocuments,
   initialQaEntries,
+  initialJobs = [],
+  initialIndexHealth = null,
   departments,
   canManage,
 }: {
   initialCollections: KbCollectionItem[];
   initialDocuments: KbDocumentItem[];
   initialQaEntries: KbQaItem[];
+  initialJobs?: KbIngestionJobItem[];
+  initialIndexHealth?: KbEmbeddingHealth | null;
   departments: KbDepartmentOption[];
   canManage: boolean;
 }) {
@@ -150,6 +247,9 @@ export function KnowledgeBaseManager({
   const [collections, setCollections] = useState<KbCollectionItem[]>(initialCollections);
   const [documents, setDocuments] = useState<KbDocumentItem[]>(initialDocuments);
   const [qaEntries, setQaEntries] = useState<KbQaItem[]>(initialQaEntries);
+  const [jobs, setJobs] = useState<KbIngestionJobItem[]>(initialJobs);
+  const [indexHealth, setIndexHealth] = useState<KbEmbeddingHealth | null>(initialIndexHealth);
+  const [runningJobAction, setRunningJobAction] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
   // Upload Document State
@@ -158,6 +258,7 @@ export function KnowledgeBaseManager({
   const [uploadTitle, setUploadTitle] = useState('');
   const [uploadCollectionId, setUploadCollectionId] = useState('');
   const [uploadScope, setUploadScope] = useState<'global' | 'department' | 'restricted'>('department');
+  const [uploadClassification, setUploadClassification] = useState<'public_org' | 'department' | 'internal_restricted'>('department');
   const [uploadEnabled, setUploadEnabled] = useState(true);
   const [uploadDeptIds, setUploadDeptIds] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -167,6 +268,8 @@ export function KnowledgeBaseManager({
   const [editDocTitle, setEditDocTitle] = useState('');
   const [editDocCollectionId, setEditDocCollectionId] = useState('');
   const [editDocScope, setEditDocScope] = useState<'global' | 'department' | 'restricted'>('department');
+  const [editDocClassification, setEditDocClassification] = useState<'public_org' | 'department' | 'internal_restricted'>('department');
+  const [editDocValidity, setEditDocValidity] = useState<'current' | 'superseded' | 'expired'>('current');
   const [editDocDeptIds, setEditDocDeptIds] = useState<string[]>([]);
   const [savingDoc, setSavingDoc] = useState(false);
 
@@ -249,10 +352,11 @@ export function KnowledgeBaseManager({
 
   async function refreshAll() {
     try {
-      const [colRes, docRes, qaRes] = await Promise.all([
+      const [colRes, docRes, qaRes, jobRes] = await Promise.all([
         fetch('/api/admin/knowledge/collections'),
         fetch('/api/admin/knowledge/documents'),
         fetch('/api/admin/knowledge/qa'),
+        fetch('/api/admin/knowledge/jobs'),
       ]);
       if (colRes.ok) {
         const d = await colRes.json();
@@ -266,16 +370,51 @@ export function KnowledgeBaseManager({
         const d = await qaRes.json();
         setQaEntries(d.entries || []);
       }
+      if (jobRes.ok) {
+        const d = await jobRes.json();
+        setJobs(d.jobs || []);
+        setIndexHealth(d.indexHealth || null);
+      }
       router.refresh();
     } catch {
       toast.error('خطا در همگام‌سازی اطلاعات مخزن دانش.');
     }
   }
 
+  async function handleJobAction(action: 'reindex_all' | 'reindex_mismatched' | 'process_pending') {
+    setRunningJobAction(true);
+    try {
+      const res = await fetch('/api/admin/knowledge/jobs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error || 'عملیات صف پردازش ناموفق بود.');
+        return;
+      }
+      if (action === 'process_pending') {
+        toast.success(
+          `صف پردازش اجرا شد (${toPersianDigits(data.summary?.succeeded || 0)} موفق).`
+        );
+      } else {
+        toast.success(
+          `${toPersianDigits(data.queuedCount || 0)} سند در صف بازسازی ایندکس قرار گرفت.`
+        );
+      }
+      await refreshAll();
+    } catch {
+      toast.error('خطای ارتباط در مدیریت صف پردازش.');
+    } finally {
+      setRunningJobAction(false);
+    }
+  }
+
   async function handleUploadDocument(e: React.FormEvent) {
     e.preventDefault();
     if (!uploadFile) {
-      toast.error('لطفاً یک فایل PDF، DOCX، TXT یا Markdown انتخاب کنید.');
+      toast.error('لطفاً یک فایل PDF، DOCX، TXT، Markdown یا XLSX انتخاب کنید.');
       return;
     }
 
@@ -286,6 +425,7 @@ export function KnowledgeBaseManager({
       fd.append('titleFa', uploadTitle.trim() || uploadFile.name.replace(/\.[^.]+$/, ''));
       if (uploadCollectionId) fd.append('collectionId', uploadCollectionId);
       fd.append('scope', uploadScope);
+      fd.append('classification', uploadClassification);
       fd.append('isEnabled', String(uploadEnabled));
       fd.append('departmentIds', JSON.stringify(uploadDeptIds));
 
@@ -322,6 +462,16 @@ export function KnowledgeBaseManager({
     setEditDocScope(
       doc.scope === 'global' || doc.scope === 'restricted' ? doc.scope : 'department'
     );
+    setEditDocClassification(
+      doc.classification === 'public_org' || doc.classification === 'internal_restricted'
+        ? doc.classification
+        : 'department'
+    );
+    setEditDocValidity(
+      doc.validityStatus === 'superseded' || doc.validityStatus === 'expired'
+        ? doc.validityStatus
+        : 'current'
+    );
     setEditDocDeptIds(doc.departments.map((d) => d.departmentId));
   }
 
@@ -337,6 +487,8 @@ export function KnowledgeBaseManager({
           titleFa: editDocTitle.trim(),
           collectionId: editDocCollectionId || null,
           scope: editDocScope,
+          classification: editDocClassification,
+          validityStatus: editDocValidity,
           departmentIds: editDocDeptIds,
         }),
       });
@@ -649,10 +801,47 @@ export function KnowledgeBaseManager({
       <input
         ref={replaceInputRef}
         type="file"
-        accept=".pdf,.docx,.txt,.md"
+        accept=".pdf,.docx,.txt,.md,.xlsx"
         className="hidden"
         onChange={handleReplaceFileChange}
       />
+
+      {indexHealth?.needsReindex && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start gap-2.5 text-xs text-amber-950">
+            <AlertTriangle className="h-4 w-4 text-amber-700 shrink-0 mt-0.5" />
+            <div className="space-y-0.5">
+              <p className="font-semibold">
+                عدم تطابق یا نیاز به به‌روزرسانی بردارهای Embedding
+              </p>
+              <p>
+                {toPersianDigits(indexHealth.mismatchedDocsCount)} سند با مدل قدیمی،{' '}
+                {toPersianDigits(indexHealth.unembeddedDocsCount)} سند بدون بردار و{' '}
+                {toPersianDigits(indexHealth.mismatchedQasCount)} پرسش‌وپاسخ نیازمند همگام‌سازی با مدل{' '}
+                <span className="font-[family-name:var(--font-mono)]">
+                  {indexHealth.activeEmbeddingModel}
+                </span>{' '}
+                هستند.
+              </p>
+            </div>
+          </div>
+          {canManage && (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={runningJobAction}
+              onClick={() => handleJobAction('reindex_mismatched')}
+            >
+              {runningJobAction ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="h-3.5 w-3.5" />
+              )}
+              <span>بازسازی و همگام‌سازی ایندکس</span>
+            </Button>
+          )}
+        </div>
+      )}
 
       <Tabs defaultValue="documents" className="space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -668,6 +857,10 @@ export function KnowledgeBaseManager({
             <TabsTrigger value="collections" className="gap-1.5">
               <FolderKanban className="h-4 w-4" />
               <span>مجموعه‌ها ({toPersianDigits(collections.length)})</span>
+            </TabsTrigger>
+            <TabsTrigger value="jobs" className="gap-1.5">
+              <Cpu className="h-4 w-4" />
+              <span>صف پردازش و ایندکس ({toPersianDigits(jobs.length)})</span>
             </TabsTrigger>
             <TabsTrigger value="sandbox" className="gap-1.5">
               <FlaskConical className="h-4 w-4" />
@@ -690,7 +883,7 @@ export function KnowledgeBaseManager({
         <TabsContent value="documents" className="space-y-4">
           <div className="flex items-center justify-between gap-4">
             <p className="text-xs text-slate-500">
-              فرمت‌های مجاز: PDF، DOCX، TXT و Markdown با بررسی امضای واقعی فایل تا سقف ۲۵ مگابایت
+              فرمت‌های مجاز: PDF، DOCX، TXT، Markdown و XLSX با بررسی امضای واقعی فایل و قطعه‌بندی ساختارمند تا سقف ۲۵ مگابایت
             </p>
             {canManage && (
               <Button size="sm" onClick={() => setUploadOpen(true)}>
@@ -750,6 +943,40 @@ export function KnowledgeBaseManager({
                         <span>{toPersianDigits(doc.chunkCount)} قطعه متنی</span>
                         <span>·</span>
                         <span>{SCOPE_LABELS[doc.scope] || doc.scope}</span>
+                        {doc.classification && (
+                          <>
+                            <span>·</span>
+                            <span>
+                              طبقه‌بندی:{' '}
+                              {CLASSIFICATION_LABELS[doc.classification] ||
+                                doc.classification}
+                            </span>
+                          </>
+                        )}
+                        {doc.validityStatus && (
+                          <>
+                            <span>·</span>
+                            <span
+                              className={
+                                doc.validityStatus === 'current'
+                                  ? 'text-emerald-700'
+                                  : 'text-amber-700 font-medium'
+                              }
+                            >
+                              اعتبار:{' '}
+                              {VALIDITY_LABELS[doc.validityStatus] ||
+                                doc.validityStatus}
+                            </span>
+                          </>
+                        )}
+                        {doc.embeddingModelUsed && (
+                          <>
+                            <span>·</span>
+                            <span className="font-[family-name:var(--font-mono)]">
+                              {doc.embeddingModelUsed}
+                            </span>
+                          </>
+                        )}
                         {doc.collectionId && collectionMap.has(doc.collectionId) && (
                           <>
                             <span>·</span>
@@ -1023,6 +1250,132 @@ export function KnowledgeBaseManager({
           </div>
         </TabsContent>
 
+        {/* INGESTION JOBS & INDEX HEALTH TAB */}
+        <TabsContent value="jobs" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <CardTitle className="text-base">
+                    صف پردازش پس‌زمینه و سلامت ایندکس برداری
+                  </CardTitle>
+                  <CardDescription>
+                    وضعیت مراحل استخراج، قطعه‌بندی سلسله‌مراتبی و همگام‌سازی مدل Embedding اسناد
+                  </CardDescription>
+                </div>
+                {canManage && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={runningJobAction}
+                      onClick={() => handleJobAction('process_pending')}
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" />
+                      <span>اجرای صف معوق</span>
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={runningJobAction}
+                      onClick={() => handleJobAction('reindex_all')}
+                    >
+                      <Cpu className="h-3.5 w-3.5" />
+                      <span>بازسازی کامل ایندکس</span>
+                    </Button>
+                  </div>
+                )}
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {indexHealth && (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-slate-500">مدل Embedding فعال</p>
+                    <p className="font-[family-name:var(--font-mono)] font-semibold text-slate-900 mt-1">
+                      {indexHealth.activeEmbeddingModel || 'تنظیم‌نشده (فقط واژگانی)'}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-slate-500">اسناد فعال نمایه‌سازی‌شده</p>
+                    <p className="font-semibold text-slate-900 mt-1 tabular-nums">
+                      {toPersianDigits(indexHealth.totalIndexedDocs)} سند
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-slate-500">اسناد نیازمند بازسازی مدل</p>
+                    <p className="font-semibold text-amber-800 mt-1 tabular-nums">
+                      {toPersianDigits(
+                        indexHealth.mismatchedDocsCount + indexHealth.unembeddedDocsCount
+                      )}{' '}
+                      مورد
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-slate-500">پرسش‌وپاسخ‌های ناهمسان</p>
+                    <p className="font-semibold text-amber-800 mt-1 tabular-nums">
+                      {toPersianDigits(indexHealth.mismatchedQasCount)} مورد
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {jobs.length === 0 ? (
+                <p className="text-xs text-slate-500 py-4 text-center">
+                  هنوز کاری در صف پردازش اسناد ثبت نشده است.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {jobs.map((job) => (
+                    <div
+                      key={job.id}
+                      className="rounded-lg border border-slate-200 bg-white px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
+                    >
+                      <div className="space-y-0.5">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-semibold text-slate-900">
+                            {job.documentTitleFa}
+                          </span>
+                          <span className="text-slate-500">
+                            ({JOB_TYPE_LABELS[job.jobType] || job.jobType} · نسخه{' '}
+                            {toPersianDigits(job.targetVersion)})
+                          </span>
+                        </div>
+                        <p className="text-slate-500">
+                          مرحله: {INGESTION_STAGE_LABELS[job.stage] || job.stage} · قطعات:{' '}
+                          {toPersianDigits(job.processedChunks)} از{' '}
+                          {toPersianDigits(job.totalChunks)}
+                          {job.embeddingModel ? ` · ${job.embeddingModel}` : ''}
+                        </p>
+                        {job.errorMessage && (
+                          <p className="text-red-700">خطا: {job.errorMessage}</p>
+                        )}
+                      </div>
+                      <span
+                        className={`font-medium whitespace-nowrap ${
+                          job.status === 'completed'
+                            ? 'text-emerald-700'
+                            : job.status === 'failed'
+                            ? 'text-red-700'
+                            : 'text-amber-700'
+                        }`}
+                      >
+                        {job.status === 'completed'
+                          ? 'تکمیل‌شده'
+                          : job.status === 'failed'
+                          ? 'ناموفق'
+                          : job.status === 'running'
+                          ? 'در حال اجرا'
+                          : 'در انتظار'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
         {/* RETRIEVAL SANDBOX TAB */}
         <TabsContent value="sandbox" className="space-y-4">
           <Card>
@@ -1089,12 +1442,56 @@ export function KnowledgeBaseManager({
                         {toPersianDigits(testResult.matches.length)}
                       </strong>
                     </span>
+                    {testResult.trace && (
+                      <>
+                        <span>
+                          راهبرد بازیابی:{' '}
+                          <strong className="font-[family-name:var(--font-mono)] text-blue-800">
+                            {testResult.trace.strategy}
+                          </strong>
+                        </span>
+                        <span>
+                          بازرتبه‌بندی:{' '}
+                          <strong className="font-[family-name:var(--font-mono)] text-slate-900">
+                            {testResult.trace.rerankMethod}
+                          </strong>
+                        </span>
+                        <span>
+                          گسترش والد:{' '}
+                          <strong className="text-slate-900 tabular-nums">
+                            {toPersianDigits(testResult.trace.parentExpandedCount)}
+                          </strong>
+                        </span>
+                        <span className="tabular-nums">
+                          زمان: {toPersianDigits(testResult.trace.latencyMs)} ms
+                        </span>
+                      </>
+                    )}
                     {testResult.conflictDetected && (
                       <span className="text-amber-800 font-medium">
                         هشدار تعارض منابع: {testResult.conflictSummaryFa}
                       </span>
                     )}
                   </div>
+
+                  {testResult.trace?.queryTransform && (
+                    <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3 text-xs space-y-1.5">
+                      <div className="font-medium text-slate-800">
+                        توضیح راهبرد: {testResult.trace.strategyReasonFa}
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {testResult.trace.queryTransform.generatedQueries.map((gq, idx) => (
+                          <span
+                            key={`${gq.reason}-${idx}`}
+                            className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-0.5 text-[11px] text-slate-700"
+                          >
+                            <span className="text-slate-400">[{gq.reason}]</span>
+                            <span>{gq.query}</span>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   {testResult.matches.length === 0 ? (
                     <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-xs text-amber-900">
@@ -1105,16 +1502,28 @@ export function KnowledgeBaseManager({
                       {testResult.matches.map((m) => (
                         <div
                           key={m.sourceId}
-                          className="rounded-lg border border-slate-200 bg-slate-50 p-3.5 space-y-1.5"
+                          className="rounded-lg border border-slate-200 bg-slate-50 p-3.5 space-y-2"
                         >
-                          <div className="flex items-center justify-between gap-2 text-xs">
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                             <span className="font-semibold text-slate-900">
                               [{m.sourceType === 'qa' ? 'پرسش‌وپاسخ' : 'قطعه سند'}] {m.title}
+                              {m.documentVersion ? ` · v${toPersianDigits(m.documentVersion)}` : ''}
                             </span>
                             <span className="font-[family-name:var(--font-mono)] text-blue-700 tabular-nums">
-                              score: {m.score} · {SCOPE_LABELS[m.scope] || m.scope}
+                              score: {m.score}
+                              {m.lexicalRank ? ` · lex#${m.lexicalRank}` : ''}
+                              {m.semanticRank ? ` · vec#${m.semanticRank}` : ''}
+                              {m.expandedFromParent ? ' · parent-expanded' : ''} ·{' '}
+                              {SCOPE_LABELS[m.scope] || m.scope}
                             </span>
                           </div>
+                          {(m.sectionTitle || m.pageNumber || m.sheetName) && (
+                            <div className="flex flex-wrap gap-2 text-[11px] text-slate-500">
+                              {m.sectionTitle && <span>بخش: {m.sectionTitle}</span>}
+                              {m.pageNumber && <span>صفحه: {toPersianDigits(m.pageNumber)}</span>}
+                              {m.sheetName && <span>کاربرگ: {m.sheetName}</span>}
+                            </div>
+                          )}
                           <p className="text-xs text-slate-700 whitespace-pre-wrap leading-relaxed">
                             {m.content}
                           </p>
@@ -1135,7 +1544,7 @@ export function KnowledgeBaseManager({
           <DialogHeader>
             <DialogTitle>بارگذاری سند در مخزن دانش</DialogTitle>
             <DialogDescription>
-              فایل‌های PDF (متنی)، DOCX، TXT یا Markdown بلافاصله استخراج، قطعه‌بندی و نمایه‌سازی می‌شوند.
+              فایل‌های PDF (متنی)، DOCX، TXT، Markdown و XLSX به صورت ساختارمند استخراج، قطعه‌بندی سلسله‌مراتبی و نمایه‌سازی می‌شوند.
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleUploadDocument} className="space-y-4">
@@ -1144,7 +1553,7 @@ export function KnowledgeBaseManager({
               <Input
                 id="doc-file"
                 type="file"
-                accept=".pdf,.docx,.txt,.md"
+                accept=".pdf,.docx,.txt,.md,.xlsx"
                 onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
                 required
               />
@@ -1158,7 +1567,7 @@ export function KnowledgeBaseManager({
                 placeholder="مثلاً: آیین‌نامه ثبت درخواست و پشتیبانی ۱۴۰۵"
               />
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div className="space-y-1.5">
                 <Label htmlFor="doc-scope">سطح دسترسی</Label>
                 <select
@@ -1172,6 +1581,23 @@ export function KnowledgeBaseManager({
                   <option value="department">اختصاصی دپارتمان</option>
                   <option value="global">عمومی (کل سازمان)</option>
                   <option value="restricted">محرمانه (خارج از دسترس AI)</option>
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="doc-classification">طبقه‌بندی</Label>
+                <select
+                  id="doc-classification"
+                  value={uploadClassification}
+                  onChange={(e) =>
+                    setUploadClassification(
+                      e.target.value as 'public_org' | 'department' | 'internal_restricted'
+                    )
+                  }
+                  className="w-full h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
+                >
+                  <option value="department">اختصاصی دپارتمان</option>
+                  <option value="public_org">عمومی سازمان</option>
+                  <option value="internal_restricted">محدود / محرمانه</option>
                 </select>
               </div>
               <div className="space-y-1.5">
@@ -1290,6 +1716,40 @@ export function KnowledgeBaseManager({
                       {c.nameFa}
                     </option>
                   ))}
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="edit-doc-class">طبقه‌بندی سند</Label>
+                <select
+                  id="edit-doc-class"
+                  value={editDocClassification}
+                  onChange={(e) =>
+                    setEditDocClassification(
+                      e.target.value as 'public_org' | 'department' | 'internal_restricted'
+                    )
+                  }
+                  className="w-full h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
+                >
+                  <option value="department">اختصاصی دپارتمان</option>
+                  <option value="public_org">عمومی سازمان</option>
+                  <option value="internal_restricted">محدود / محرمانه</option>
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="edit-doc-validity">وضعیت اعتبار سند</Label>
+                <select
+                  id="edit-doc-validity"
+                  value={editDocValidity}
+                  onChange={(e) =>
+                    setEditDocValidity(
+                      e.target.value as 'current' | 'superseded' | 'expired'
+                    )
+                  }
+                  className="w-full h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
+                >
+                  <option value="current">معتبر (قابل استناد در AI)</option>
+                  <option value="superseded">جایگزین‌شده / منسوخ</option>
+                  <option value="expired">منقضی‌شده</option>
                 </select>
               </div>
             </div>

@@ -80,6 +80,24 @@ export function AiSettingsManager({
   );
   const [temperature, setTemperature] = useState(initialProvider.temperature);
   const [globalEnabled, setGlobalEnabled] = useState(initialProvider.globalEnabled);
+  const [rerankerMode, setRerankerMode] = useState<
+    'none' | 'cross_feature' | 'llm' | 'http_cross_encoder'
+  >(initialProvider.rerankerMode || 'cross_feature');
+  const [rerankerEndpointUrl, setRerankerEndpointUrl] = useState(
+    initialProvider.rerankerEndpointUrl || ''
+  );
+  const [cragMaxIterations, setCragMaxIterations] = useState(
+    String(initialProvider.cragMaxIterations ?? 2)
+  );
+  const [cragMaxModelCalls, setCragMaxModelCalls] = useState(
+    String(initialProvider.cragMaxModelCalls ?? 2)
+  );
+  const [cragEnableLlmJudge, setCragEnableLlmJudge] = useState(
+    Boolean(initialProvider.cragEnableLlmJudge)
+  );
+  const [enableLlmQueryTransform, setEnableLlmQueryTransform] = useState(
+    Boolean(initialProvider.enableLlmQueryTransform)
+  );
 
   const [savingGlobal, setSavingGlobal] = useState(false);
   const [testingConn, setTestingConn] = useState(false);
@@ -119,6 +137,12 @@ export function AiSettingsManager({
           maxOutputTokens: Number(maxOutputTokens) || 1024,
           temperature: temperature.trim() || '0.1',
           globalEnabled,
+          rerankerMode,
+          rerankerEndpointUrl: rerankerEndpointUrl.trim() || null,
+          cragMaxIterations: Number(cragMaxIterations) || 2,
+          cragMaxModelCalls: Number(cragMaxModelCalls) || 2,
+          cragEnableLlmJudge,
+          enableLlmQueryTransform,
         }),
       });
       const data = await res.json();
@@ -368,7 +392,7 @@ export function AiSettingsManager({
                   onChange={(e) => setEmbeddingModel(e.target.value)}
                   placeholder={
                     providerType === 'gemini'
-                      ? 'gemini-embedding-001'
+                      ? 'gemini-embedding-2'
                       : 'text-embedding-3-small'
                   }
                 />
@@ -454,6 +478,93 @@ export function AiSettingsManager({
                   value={temperature}
                   onChange={(e) => setTemperature(e.target.value)}
                 />
+              </div>
+            </div>
+
+            {/* Advanced RAG & CRAG Engine Governance */}
+            <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-4 space-y-3">
+              <div className="text-xs font-semibold text-slate-800">
+                تنظیمات موتور پیشرفته RAG و کنترلگر اصلاحی (CRAG)
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="space-y-1.5">
+                  <Label htmlFor="reranker-mode">روش بازرتبه‌بندی (Reranker)</Label>
+                  <select
+                    id="reranker-mode"
+                    value={rerankerMode}
+                    onChange={(e) =>
+                      setRerankerMode(
+                        e.target.value as
+                          | 'none'
+                          | 'cross_feature'
+                          | 'llm'
+                          | 'http_cross_encoder'
+                      )
+                    }
+                    className="w-full h-10 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-900"
+                  >
+                    <option value="cross_feature">ترکیبی داخلی (Cross-Feature سریع)</option>
+                    <option value="llm">بازرتبه‌بندی هوشمند با مدل (LLM Rerank)</option>
+                    <option value="http_cross_encoder">Cross-Encoder خارجی (HTTP)</option>
+                    <option value="none">غیرفعال (فقط RRF)</option>
+                  </select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="crag-max-iter">حداکثر چرخه اصلاحی CRAG</Label>
+                  <Input
+                    id="crag-max-iter"
+                    type="number"
+                    min={0}
+                    max={3}
+                    dir="ltr"
+                    value={cragMaxIterations}
+                    onChange={(e) => setCragMaxIterations(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="crag-max-calls">سقف فراخوانی مدل در CRAG</Label>
+                  <Input
+                    id="crag-max-calls"
+                    type="number"
+                    min={0}
+                    max={4}
+                    dir="ltr"
+                    value={cragMaxModelCalls}
+                    onChange={(e) => setCragMaxModelCalls(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              {rerankerMode === 'http_cross_encoder' && (
+                <div className="space-y-1.5">
+                  <Label htmlFor="reranker-url">نشانی سرویس Cross-Encoder</Label>
+                  <Input
+                    id="reranker-url"
+                    dir="ltr"
+                    value={rerankerEndpointUrl}
+                    onChange={(e) => setRerankerEndpointUrl(e.target.value)}
+                    placeholder="https://reranker.internal/v1/rerank"
+                  />
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-5 pt-1 text-xs text-slate-700">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={cragEnableLlmJudge}
+                    onChange={(e) => setCragEnableLlmJudge(e.target.checked)}
+                  />
+                  <span>ارزیاب LLM در کنترلگر CRAG برای موارد مرزی فعال باشد</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={enableLlmQueryTransform}
+                    onChange={(e) => setEnableLlmQueryTransform(e.target.checked)}
+                  />
+                  <span>بازنویسی هوشمند پرسش با مدل (Query Rewrite) فعال باشد</span>
+                </label>
               </div>
             </div>
 

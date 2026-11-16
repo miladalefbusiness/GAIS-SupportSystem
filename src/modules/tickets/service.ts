@@ -418,6 +418,42 @@ export async function convertAiConversationToTicket(params: {
       });
     }
 
+    const retrievalRecords = await tx
+      .select()
+      .from(knowledgeRetrievalRecords)
+      .where(eq(knowledgeRetrievalRecords.conversationId, conv.id))
+      .orderBy(asc(knowledgeRetrievalRecords.createdAt));
+
+    if (retrievalRecords.length > 0) {
+      const latestRec = retrievalRecords[retrievalRecords.length - 1];
+      const traceObj = (latestRec.traceJson || {}) as Record<string, unknown>;
+      const sourceLines = (latestRec.sourcesJson || [])
+        .slice(0, 4)
+        .map(
+          (s) =>
+            `• ${s.title}${s.documentVersion ? ` (نسخه ${s.documentVersion})` : ''}${
+              s.pageNumber ? ` صفحه ${s.pageNumber}` : ''
+            } [امتیاز: ${s.score}]`
+        );
+      const summaryLines = [
+        'گزارش خودکار موتور بازیابی دانش (RAG / CRAG) برای کارشناس:',
+        `وضعیت آخرین ارزیابی: ${String(traceObj.cragDecision || (latestRec.abstained ? 'abstained' : 'relevant'))} · بالاترین امتیاز: ${latestRec.topScore}`,
+        traceObj.cragReasonFa ? `دلیل ارزیابی: ${String(traceObj.cragReasonFa)}` : null,
+        sourceLines.length > 0 ? `منابع بررسی‌شده:\n${sourceLines.join('\n')}` : 'منبع مستقیمی یافت نشد.',
+      ]
+        .filter(Boolean)
+        .join('\n');
+
+      await tx.insert(ticketMessages).values({
+        id: `tmsg_${randomUUID()}`,
+        ticketId,
+        senderType: 'system',
+        visibility: 'internal_note',
+        body: summaryLines,
+        createdAt: now,
+      });
+    }
+
     await tx.insert(ticketMessages).values({
       id: `tmsg_${randomUUID()}`,
       ticketId,

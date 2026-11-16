@@ -20,10 +20,20 @@ export const createCollectionSchema = z.object({
 
 export const updateCollectionSchema = createCollectionSchema.partial();
 
+export const kbClassificationSchema = z.enum([
+  'public_org',
+  'department',
+  'internal_restricted',
+]);
+export const kbValidityStatusSchema = z.enum(['current', 'superseded', 'expired']);
+
 export const updateDocumentSchema = z.object({
   titleFa: z.string().trim().min(2).max(180).optional(),
   collectionId: z.string().min(1).nullable().optional(),
   scope: kbScopeSchema.optional(),
+  classification: kbClassificationSchema.optional(),
+  validityStatus: kbValidityStatusSchema.optional(),
+  supersededByDocId: z.string().min(1).nullable().optional(),
   isEnabled: z.boolean().optional(),
   departmentIds: z.array(z.string().min(1)).optional(),
 });
@@ -45,4 +55,16 @@ export const updateQaSchema = createQaSchema.partial();
 export const testRetrievalSchema = z.object({
   departmentId: z.string().min(1, 'انتخاب دپارتمان الزامی است'),
   query: z.string().trim().min(2, 'متن پرسش آزمایشی الزامی است').max(1000),
+  forcedStrategy: z
+    .enum([
+      'direct_lexical',
+      'semantic',
+      'hybrid',
+      'multi_query',
+      'decomposed',
+      'iterative',
+    ])
+    .nullable()
+    .optional(),
+  rerankerMode: z.enum(['none', 'cross_feature', 'llm']).optional(),
 });

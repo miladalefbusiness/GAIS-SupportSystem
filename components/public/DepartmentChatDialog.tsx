@@ -24,8 +24,21 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { toPersianDigits } from '@/src/lib/jalali';
 import type { ThemeAccentPreset } from '@/src/modules/admin/settings-schema';
 import type { PublicDepartmentCard } from '@/src/modules/departments/service';
+
+export interface ChatCitationItem {
+  refCode: string;
+  sourceType: 'qa' | 'document_chunk';
+  sourceId: string;
+  title: string;
+  documentVersion?: number | null;
+  pageNumber?: number | null;
+  sheetName?: string | null;
+  sectionTitle?: string | null;
+  score?: number;
+}
 
 export interface ChatMessageItem {
   id: string;
@@ -33,6 +46,8 @@ export interface ChatMessageItem {
   content: string;
   abstained?: boolean;
   escalationOffered?: boolean;
+  responseOutcome?: string | null;
+  citations?: ChatCitationItem[];
   createdAt: string;
 }
 
@@ -82,6 +97,8 @@ function mapServerMessages(
     content: string;
     abstained?: boolean;
     escalationOffered?: boolean;
+    responseOutcome?: string | null;
+    citations?: ChatCitationItem[];
     createdAt: string;
   }>
 ): ChatMessageItem[] {
@@ -97,6 +114,8 @@ function mapServerMessages(
     content: m.content,
     abstained: m.abstained,
     escalationOffered: m.escalationOffered,
+    responseOutcome: m.responseOutcome,
+    citations: Array.isArray(m.citations) ? m.citations : [],
     createdAt: m.createdAt,
   }));
   return [welcome, ...mapped];
@@ -287,6 +306,10 @@ export function DepartmentConversationPanel({
             content: data.assistantMessage.content,
             abstained: data.assistantMessage.abstained,
             escalationOffered: data.assistantMessage.escalationOffered,
+            responseOutcome: data.assistantMessage.responseOutcome,
+            citations: Array.isArray(data.assistantMessage.citations)
+              ? data.assistantMessage.citations
+              : [],
             createdAt: data.assistantMessage.createdAt,
           });
         }
@@ -527,12 +550,47 @@ export function DepartmentConversationPanel({
                   <span className="tabular-nums">{formatTimeFa(msg.createdAt)}</span>
                 </div>
                 <p className="whitespace-pre-wrap">{msg.content}</p>
-                {msg.abstained && (
+                {msg.citations && msg.citations.length > 0 && (
+                  <div className="border-t border-slate-100 pt-2 space-y-1.5">
+                    <div className="text-[11px] font-medium text-slate-500">
+                      منابع مستند پاسخ:
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {msg.citations.map((cit) => (
+                        <span
+                          key={`${msg.id}-${cit.sourceId}`}
+                          className="inline-flex flex-wrap items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] text-slate-700"
+                        >
+                          <span className="font-semibold text-slate-800">{cit.title}</span>
+                          {cit.documentVersion ? (
+                            <span className="text-slate-500">
+                              · نسخه {toPersianDigits(cit.documentVersion)}
+                            </span>
+                          ) : null}
+                          {cit.sectionTitle ? (
+                            <span className="text-slate-500">· {cit.sectionTitle}</span>
+                          ) : null}
+                          {cit.pageNumber ? (
+                            <span className="text-slate-500">
+                              · صفحه {toPersianDigits(cit.pageNumber)}
+                            </span>
+                          ) : null}
+                          {cit.sheetName ? (
+                            <span className="text-slate-500">· کاربرگ {cit.sheetName}</span>
+                          ) : null}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {(msg.abstained || msg.responseOutcome === 'clarify') && (
                   <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-900">
                     <span className="flex items-center gap-1.5">
                       <ShieldAlert className="h-3.5 w-3.5 shrink-0" />
                       <span>
-                        برای بررسی دقیق‌تر می‌توانید گفت‌وگو را به کارشناس ارجاع دهید.
+                        {msg.responseOutcome === 'clarify'
+                          ? 'در صورت نیاز به شفاف‌سازی بیشتر یا بررسی موردی می‌توانید با کارشناس ارتباط بگیرید.'
+                          : 'برای بررسی دقیق‌تر می‌توانید گفت‌وگو را به کارشناس ارجاع دهید.'}
                       </span>
                     </span>
                     {msg.escalationOffered && !escalatedToHuman && (

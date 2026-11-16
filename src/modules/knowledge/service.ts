@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { asc, desc, eq, inArray } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { recordAuditLog } from '@/src/core/audit/audit.ts';
 import { getStorageDriver } from '@/src/core/storage/local-storage.ts';
 import { db } from '@/src/db/index.ts';
@@ -7,29 +7,65 @@ import {
   departmentKnowledgeCollections,
   departments,
   knowledgeChunks,
+  knowledgeChunkVectors,
   knowledgeCollections,
   knowledgeDocumentDepartments,
   knowledgeDocuments,
   knowledgeDocumentVersions,
   knowledgeQaDepartments,
   knowledgeQaEntries,
+  knowledgeQaVectors,
 } from '@/src/db/schema.ts';
 import { createAiProviderAdapter } from '../ai/provider.ts';
 import { getInternalAiProviderRuntimeConfig } from '../ai/settings.ts';
-import { validateAndExtractDocument } from './extractor.ts';
-import { chunkDocumentText, normalizePersianText } from './text.ts';
+import { validateAndExtractStructuredDocument } from '../rag/chunking/structured-parser.ts';
+import {
+  enqueueDocumentIngestionJob,
+  runIngestionJobById,
+  scheduleBackgroundIngestionWorker,
+} from '../rag/jobs/ingestion-worker.ts';
+import {
+  buildLexicalIndexString,
+  normalizePersianForSearch,
+} from '../rag/normalizer.ts';
+import { getVectorStoreAdapter } from '../rag/stores/pg-vector.ts';
+import type { DocumentClassification, DocumentValidityStatus } from '../rag/types.ts';
 
 const MAX_KB_DOCUMENT_BYTES = 25 * 1024 * 1024; // 25 MB
 
-async function tryComputeEmbedding(text: string): Promise<number[] | null> {
+async function tryComputeEmbeddingWithModel(text: string): Promise<{
+  embedding: number[] | null;
+  embeddingModel: string | null;
+  dimensions: number | null;
+}> {
   try {
     const config = await getInternalAiProviderRuntimeConfig();
-    if (!config.embeddingModel) return null;
+    if (!config.embeddingModel || !config.apiKey) {
+      return { embedding: null, embeddingModel: null, dimensions: null };
+    }
     const adapter = createAiProviderAdapter(config);
-    return await adapter.generateEmbedding(text.slice(0, 6000));
+    const embedding = await adapter.generateEmbedding(text.slice(0, 6000));
+    if (!embedding || embedding.length === 0) {
+      return { embedding: null, embeddingModel: null, dimensions: null };
+    }
+    return {
+      embedding,
+      embeddingModel: config.embeddingModel,
+      dimensions: embedding.length,
+    };
   } catch {
-    return null;
+    return { embedding: null, embeddingModel: null, dimensions: null };
   }
+}
+
+function resolveDefaultClassification(
+  scope: 'global' | 'department' | 'restricted',
+  explicit?: DocumentClassification
+): DocumentClassification {
+  if (explicit) return explicit;
+  if (scope === 'global') return 'public_org';
+  if (scope === 'restricted') return 'internal_restricted';
+  return 'department';
 }
 
 export async function listKnowledgeCollectionsAdmin() {
@@ -193,7 +229,13 @@ export async function listKnowledgeDocumentsAdmin() {
     fileExtension: doc.fileExtension,
     byteSize: doc.byteSize,
     scope: doc.scope,
+    classification: doc.classification,
     status: doc.status,
+    ingestionStage: doc.ingestionStage,
+    validityStatus: doc.validityStatus,
+    supersededByDocId: doc.supersededByDocId,
+    embeddingModelUsed: doc.embeddingModelUsed,
+    embeddingDimensions: doc.embeddingDimensions,
     isEnabled: doc.isEnabled,
     version: doc.version,
     chunkCount: doc.chunkCount,
@@ -206,76 +248,42 @@ export async function listKnowledgeDocumentsAdmin() {
   }));
 }
 
-async function indexDocumentTextChunks(params: {
-  documentId: string;
-  extractedText: string;
-  titleFa: string;
-}) {
-  const chunks = chunkDocumentText(params.extractedText);
-  if (chunks.length === 0) {
-    throw new Error('EXTRACTED_TEXT_EMPTY');
-  }
-
-  const chunkRecords = await Promise.all(
-    chunks.map(async (content, index) => {
-      const normalizedContent = normalizePersianText(content);
-      const embeddingJson = await tryComputeEmbedding(content);
-      return {
-        id: `kbc_${randomUUID()}`,
-        documentId: params.documentId,
-        chunkIndex: index,
-        content,
-        normalizedContent,
-        tokenEstimate: Math.ceil(content.length / 4),
-        metadataJson: { titleFa: params.titleFa, chunkIndex: index },
-        embeddingJson,
-      };
-    })
-  );
-
-  await db.transaction(async (tx) => {
-    await tx
-      .delete(knowledgeChunks)
-      .where(eq(knowledgeChunks.documentId, params.documentId));
-    await tx.insert(knowledgeChunks).values(chunkRecords);
-  });
-
-  return chunkRecords.length;
-}
-
 export async function uploadAndIndexDocument(params: {
   filename: string;
   buffer: Buffer;
   titleFa: string;
   collectionId: string | null;
   scope: 'global' | 'department' | 'restricted';
+  classification?: DocumentClassification;
+  validityStatus?: DocumentValidityStatus;
   isEnabled: boolean;
   departmentIds: string[];
   actorUserId: string;
   ipAddress: string | null;
   userAgent: string | null;
+  async?: boolean;
 }) {
   const docId = `kbd_${randomUUID()}`;
   const now = new Date();
   const year = now.getUTCFullYear();
   const month = String(now.getUTCMonth() + 1).padStart(2, '0');
-  const safeExt = params.filename.split('.').pop()?.toLowerCase().replace(/[^a-z0-9]/g, '') || 'bin';
-  const storageKey = `kb/${year}/${month}/${randomUUID()}.${safeExt}`;
 
-  // First validate & extract before saving metadata, OR store file & record failed status if extraction fails
-  let extracted;
-  try {
-    extracted = await validateAndExtractDocument({
-      filename: params.filename,
-      buffer: params.buffer,
-      maxBytes: MAX_KB_DOCUMENT_BYTES,
-    });
-  } catch (err) {
-    const code = err instanceof Error ? err.message : 'EXTRACTION_FAILED';
-    throw new Error(code);
-  }
+  // Validate file signature, size, and extractability synchronously before storing
+  const extracted = await validateAndExtractStructuredDocument({
+    filename: params.filename,
+    buffer: params.buffer,
+    maxBytes: MAX_KB_DOCUMENT_BYTES,
+  });
 
+  const storageKey = `kb/${year}/${month}/${randomUUID()}.${extracted.extension}`;
   await getStorageDriver().put(storageKey, params.buffer);
+
+  const classification = resolveDefaultClassification(
+    params.scope,
+    params.classification
+  );
+  const validityStatus: DocumentValidityStatus =
+    params.validityStatus ?? 'current';
 
   await db.transaction(async (tx) => {
     await tx.insert(knowledgeDocuments).values({
@@ -289,10 +297,13 @@ export async function uploadAndIndexDocument(params: {
       byteSize: params.buffer.length,
       sha256: extracted.sha256,
       scope: params.scope,
+      classification,
       status: 'processing',
+      ingestionStage: 'queued',
+      validityStatus,
       isEnabled: params.isEnabled,
       version: 1,
-      extractedText: extracted.extractedText,
+      extractedText: null,
       chunkCount: 0,
       uploadedBy: params.actorUserId,
     });
@@ -323,33 +334,19 @@ export async function uploadAndIndexDocument(params: {
     }
   });
 
-  try {
-    const chunkCount = await indexDocumentTextChunks({
-      documentId: docId,
-      extractedText: extracted.extractedText,
-      titleFa: params.titleFa,
-    });
+  const job = await enqueueDocumentIngestionJob({
+    documentId: docId,
+    jobType: 'ingest',
+    targetVersion: 1,
+    triggeredByUserId: params.actorUserId,
+    payloadJson: { filename: params.filename, extension: extracted.extension },
+  });
 
-    const finalStatus = params.isEnabled ? 'indexed' : 'disabled';
-    await db
-      .update(knowledgeDocuments)
-      .set({
-        status: finalStatus,
-        chunkCount,
-        errorMessage: null,
-        lastIndexedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(knowledgeDocuments.id, docId));
-
-    await db
-      .update(knowledgeDocumentVersions)
-      .set({ status: finalStatus })
-      .where(eq(knowledgeDocumentVersions.documentId, docId));
-
+  if (params.async) {
+    scheduleBackgroundIngestionWorker();
     await recordAuditLog({
       actorUserId: params.actorUserId,
-      action: 'kb.document.uploaded_and_indexed',
+      action: 'kb.document.upload_queued',
       targetType: 'knowledge_document',
       targetId: docId,
       ipAddress: params.ipAddress,
@@ -357,26 +354,56 @@ export async function uploadAndIndexDocument(params: {
       metadata: {
         extension: extracted.extension,
         byteSize: params.buffer.length,
-        chunkCount,
         scope: params.scope,
+        classification,
+        jobId: job.id,
       },
     });
 
-    return { id: docId, status: finalStatus, chunkCount };
-  } catch (err) {
-    const errMsg =
-      err instanceof Error ? err.message : 'خطا در قطعه‌بندی و نمایه‌سازی سند';
-    await db
-      .update(knowledgeDocuments)
-      .set({
-        status: 'failed',
-        chunkCount: 0,
-        errorMessage: errMsg,
-        updatedAt: new Date(),
-      })
-      .where(eq(knowledgeDocuments.id, docId));
-    throw err;
+    return {
+      id: docId,
+      status: 'processing',
+      ingestionStage: 'queued',
+      chunkCount: 0,
+      parentCount: 0,
+      childCount: 0,
+      embeddingModel: null,
+      jobId: job.id,
+    };
   }
+
+  const jobResult = await runIngestionJobById(job.id);
+
+  await recordAuditLog({
+    actorUserId: params.actorUserId,
+    action: 'kb.document.uploaded_and_indexed',
+    targetType: 'knowledge_document',
+    targetId: docId,
+    ipAddress: params.ipAddress,
+    userAgent: params.userAgent,
+    metadata: {
+      extension: extracted.extension,
+      byteSize: params.buffer.length,
+      chunkCount: jobResult.chunkCount,
+      parentCount: jobResult.parentCount,
+      childCount: jobResult.childCount,
+      embeddingModel: jobResult.embeddingModel,
+      scope: params.scope,
+      classification,
+      jobId: job.id,
+    },
+  });
+
+  return {
+    id: docId,
+    status: jobResult.status,
+    ingestionStage: 'completed',
+    chunkCount: jobResult.chunkCount,
+    parentCount: jobResult.parentCount,
+    childCount: jobResult.childCount,
+    embeddingModel: jobResult.embeddingModel,
+    jobId: job.id,
+  };
 }
 
 export async function replaceKnowledgeDocumentFile(params: {
@@ -386,13 +413,14 @@ export async function replaceKnowledgeDocumentFile(params: {
   actorUserId: string;
   ipAddress: string | null;
   userAgent: string | null;
+  async?: boolean;
 }) {
   const doc = await db.query.knowledgeDocuments.findFirst({
     where: eq(knowledgeDocuments.id, params.documentId),
   });
   if (!doc) return null;
 
-  const extracted = await validateAndExtractDocument({
+  const extracted = await validateAndExtractStructuredDocument({
     filename: params.filename,
     buffer: params.buffer,
     maxBytes: MAX_KB_DOCUMENT_BYTES,
@@ -404,51 +432,68 @@ export async function replaceKnowledgeDocumentFile(params: {
 
   const nextVersion = doc.version + 1;
 
-  await db
-    .update(knowledgeDocuments)
-    .set({
+  await db.transaction(async (tx) => {
+    await tx
+      .update(knowledgeDocuments)
+      .set({
+        originalFilename: params.filename,
+        storageKey,
+        mimeType: extracted.detectedMimeType,
+        fileExtension: extracted.extension,
+        byteSize: params.buffer.length,
+        sha256: extracted.sha256,
+        version: nextVersion,
+        status: 'processing',
+        ingestionStage: 'queued',
+        errorMessage: null,
+        updatedAt: now,
+      })
+      .where(eq(knowledgeDocuments.id, params.documentId));
+
+    await tx.insert(knowledgeDocumentVersions).values({
+      id: `kdv_${randomUUID()}`,
+      documentId: params.documentId,
+      version: nextVersion,
       originalFilename: params.filename,
       storageKey,
-      mimeType: extracted.detectedMimeType,
-      fileExtension: extracted.extension,
       byteSize: params.buffer.length,
       sha256: extracted.sha256,
-      version: nextVersion,
       status: 'processing',
-      extractedText: extracted.extractedText,
-      errorMessage: null,
-      updatedAt: new Date(),
-    })
-    .where(eq(knowledgeDocuments.id, params.documentId));
-
-  const chunkCount = await indexDocumentTextChunks({
-    documentId: params.documentId,
-    extractedText: extracted.extractedText,
-    titleFa: doc.titleFa,
+      createdBy: params.actorUserId,
+    });
   });
 
-  const finalStatus = doc.isEnabled ? 'indexed' : 'disabled';
-  await db
-    .update(knowledgeDocuments)
-    .set({
-      status: finalStatus,
-      chunkCount,
-      lastIndexedAt: new Date(),
-      updatedAt: new Date(),
-    })
-    .where(eq(knowledgeDocuments.id, params.documentId));
-
-  await db.insert(knowledgeDocumentVersions).values({
-    id: `kdv_${randomUUID()}`,
+  const job = await enqueueDocumentIngestionJob({
     documentId: params.documentId,
-    version: nextVersion,
-    originalFilename: params.filename,
-    storageKey,
-    byteSize: params.buffer.length,
-    sha256: extracted.sha256,
-    status: finalStatus,
-    createdBy: params.actorUserId,
+    jobType: 'replace',
+    targetVersion: nextVersion,
+    triggeredByUserId: params.actorUserId,
+    payloadJson: { filename: params.filename, version: nextVersion },
   });
+
+  if (params.async) {
+    scheduleBackgroundIngestionWorker();
+    await recordAuditLog({
+      actorUserId: params.actorUserId,
+      action: 'kb.document.replace_queued',
+      targetType: 'knowledge_document',
+      targetId: params.documentId,
+      ipAddress: params.ipAddress,
+      userAgent: params.userAgent,
+      metadata: { version: nextVersion, jobId: job.id },
+    });
+    return {
+      id: params.documentId,
+      version: nextVersion,
+      chunkCount: 0,
+      parentCount: 0,
+      childCount: 0,
+      status: 'processing',
+      jobId: job.id,
+    };
+  }
+
+  const jobResult = await runIngestionJobById(job.id);
 
   await recordAuditLog({
     actorUserId: params.actorUserId,
@@ -457,10 +502,24 @@ export async function replaceKnowledgeDocumentFile(params: {
     targetId: params.documentId,
     ipAddress: params.ipAddress,
     userAgent: params.userAgent,
-    metadata: { version: nextVersion, chunkCount },
+    metadata: {
+      version: nextVersion,
+      chunkCount: jobResult.chunkCount,
+      parentCount: jobResult.parentCount,
+      childCount: jobResult.childCount,
+      jobId: job.id,
+    },
   });
 
-  return { id: params.documentId, version: nextVersion, chunkCount, status: finalStatus };
+  return {
+    id: params.documentId,
+    version: nextVersion,
+    chunkCount: jobResult.chunkCount,
+    parentCount: jobResult.parentCount,
+    childCount: jobResult.childCount,
+    status: jobResult.status,
+    jobId: job.id,
+  };
 }
 
 export async function reprocessKnowledgeDocument(params: {
@@ -468,62 +527,70 @@ export async function reprocessKnowledgeDocument(params: {
   actorUserId: string;
   ipAddress: string | null;
   userAgent: string | null;
+  async?: boolean;
 }) {
   const doc = await db.query.knowledgeDocuments.findFirst({
     where: eq(knowledgeDocuments.id, params.documentId),
   });
   if (!doc) return null;
 
-  try {
-    const fileBuf = await getStorageDriver().get(doc.storageKey);
-    const extracted = await validateAndExtractDocument({
-      filename: doc.originalFilename,
-      buffer: fileBuf,
-      maxBytes: MAX_KB_DOCUMENT_BYTES,
-    });
+  await db
+    .update(knowledgeDocuments)
+    .set({
+      status: 'processing',
+      ingestionStage: 'queued',
+      errorMessage: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(knowledgeDocuments.id, doc.id));
 
-    const chunkCount = await indexDocumentTextChunks({
-      documentId: doc.id,
-      extractedText: extracted.extractedText,
-      titleFa: doc.titleFa,
-    });
+  const job = await enqueueDocumentIngestionJob({
+    documentId: doc.id,
+    jobType: 'reprocess',
+    targetVersion: doc.version,
+    triggeredByUserId: params.actorUserId,
+    payloadJson: { version: doc.version },
+  });
 
-    const finalStatus = doc.isEnabled ? 'indexed' : 'disabled';
-    await db
-      .update(knowledgeDocuments)
-      .set({
-        extractedText: extracted.extractedText,
-        chunkCount,
-        status: finalStatus,
-        errorMessage: null,
-        lastIndexedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(knowledgeDocuments.id, doc.id));
-
-    await recordAuditLog({
-      actorUserId: params.actorUserId,
-      action: 'kb.document.reprocessed',
-      targetType: 'knowledge_document',
-      targetId: doc.id,
-      ipAddress: params.ipAddress,
-      userAgent: params.userAgent,
-      metadata: { chunkCount },
-    });
-
-    return { ok: true, chunkCount, status: finalStatus };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : 'REPROCESS_FAILED';
-    await db
-      .update(knowledgeDocuments)
-      .set({
-        status: 'failed',
-        errorMessage: msg,
-        updatedAt: new Date(),
-      })
-      .where(eq(knowledgeDocuments.id, doc.id));
-    throw err;
+  if (params.async) {
+    scheduleBackgroundIngestionWorker();
+    return {
+      ok: true,
+      queued: true,
+      chunkCount: doc.chunkCount,
+      parentCount: 0,
+      childCount: 0,
+      status: 'processing',
+      jobId: job.id,
+    };
   }
+
+  const jobResult = await runIngestionJobById(job.id);
+
+  await recordAuditLog({
+    actorUserId: params.actorUserId,
+    action: 'kb.document.reprocessed',
+    targetType: 'knowledge_document',
+    targetId: doc.id,
+    ipAddress: params.ipAddress,
+    userAgent: params.userAgent,
+    metadata: {
+      chunkCount: jobResult.chunkCount,
+      parentCount: jobResult.parentCount,
+      childCount: jobResult.childCount,
+      jobId: job.id,
+    },
+  });
+
+  return {
+    ok: true,
+    queued: false,
+    chunkCount: jobResult.chunkCount,
+    parentCount: jobResult.parentCount,
+    childCount: jobResult.childCount,
+    status: jobResult.status,
+    jobId: job.id,
+  };
 }
 
 export async function updateKnowledgeDocumentMetadata(params: {
@@ -532,6 +599,9 @@ export async function updateKnowledgeDocumentMetadata(params: {
     titleFa?: string;
     collectionId?: string | null;
     scope?: 'global' | 'department' | 'restricted';
+    classification?: DocumentClassification;
+    validityStatus?: DocumentValidityStatus;
+    supersededByDocId?: string | null;
     isEnabled?: boolean;
     departmentIds?: string[];
   };
@@ -552,9 +622,16 @@ export async function updateKnowledgeDocumentMetadata(params: {
     if (params.input.collectionId !== undefined)
       updates.collectionId = params.input.collectionId;
     if (params.input.scope !== undefined) updates.scope = params.input.scope;
+    if (params.input.classification !== undefined)
+      updates.classification = params.input.classification;
+    if (params.input.validityStatus !== undefined)
+      updates.validityStatus = params.input.validityStatus;
+    if (params.input.supersededByDocId !== undefined)
+      updates.supersededByDocId = params.input.supersededByDocId;
+
     if (params.input.isEnabled !== undefined) {
       updates.isEnabled = params.input.isEnabled;
-      if (doc.status !== 'failed') {
+      if (doc.status !== 'failed' && doc.status !== 'processing') {
         updates.status = params.input.isEnabled ? 'indexed' : 'disabled';
       }
     }
@@ -563,6 +640,33 @@ export async function updateKnowledgeDocumentMetadata(params: {
       .update(knowledgeDocuments)
       .set(updates)
       .where(eq(knowledgeDocuments.id, params.documentId));
+
+    const nextEnabled = params.input.isEnabled ?? doc.isEnabled;
+    const nextScope = params.input.scope ?? doc.scope;
+    const nextValidity = params.input.validityStatus ?? doc.validityStatus;
+    const nextStatus = updates.status ?? doc.status;
+    const nextClassification = params.input.classification ?? doc.classification;
+
+    const shouldBeActive =
+      nextStatus === 'indexed' &&
+      nextEnabled &&
+      nextScope !== 'restricted' &&
+      nextValidity === 'current';
+
+    await tx
+      .update(knowledgeChunks)
+      .set({
+        isActive: shouldBeActive,
+        ...(params.input.classification !== undefined
+          ? { classification: nextClassification }
+          : {}),
+      })
+      .where(eq(knowledgeChunks.documentId, params.documentId));
+
+    await tx
+      .update(knowledgeChunkVectors)
+      .set({ isActive: shouldBeActive })
+      .where(eq(knowledgeChunkVectors.documentId, params.documentId));
 
     if (params.input.departmentIds !== undefined) {
       await tx
@@ -593,6 +697,8 @@ export async function updateKnowledgeDocumentMetadata(params: {
     metadata: {
       isEnabled: params.input.isEnabled,
       scope: params.input.scope,
+      classification: params.input.classification,
+      validityStatus: params.input.validityStatus,
     },
   });
 
@@ -664,6 +770,7 @@ export async function listQaEntriesAdmin() {
     keywords: e.keywords,
     scope: e.scope,
     status: e.status,
+    embeddingModel: e.embeddingModel,
     createdAt: e.createdAt.toISOString(),
     updatedAt: e.updatedAt.toISOString(),
     departments: deptLinks.filter((d) => d.qaEntryId === e.id),
@@ -677,7 +784,7 @@ function buildQaSearchText(params: {
   keywords: string[];
   category: string;
 }): string {
-  return normalizePersianText(
+  return normalizePersianForSearch(
     [
       params.question,
       ...params.alternativeQuestions,
@@ -706,9 +813,21 @@ export async function createQaEntry(params: {
 }) {
   const id = `qa_${randomUUID()}`;
   const normalizedSearchText = buildQaSearchText(params.input);
-  const embeddingJson = await tryComputeEmbedding(
+  const lexicalText = buildLexicalIndexString(
+    `${params.input.question}\n${params.input.officialAnswer}`,
+    [
+      ...params.input.alternativeQuestions,
+      ...params.input.keywords,
+      params.input.category,
+    ]
+  );
+
+  const embedRes = await tryComputeEmbeddingWithModel(
     `${params.input.question}\n${params.input.alternativeQuestions.join('\n')}\n${params.input.officialAnswer}`
   );
+  const isQaActive =
+    params.input.status === 'published' && params.input.scope !== 'restricted';
+  const vectorStore = getVectorStoreAdapter();
 
   const created = await db.transaction(async (tx) => {
     const [row] = await tx
@@ -724,10 +843,27 @@ export async function createQaEntry(params: {
         scope: params.input.scope,
         status: params.input.status,
         normalizedSearchText,
-        embeddingJson,
+        embeddingJson: embedRes.embedding,
+        embeddingModel: embedRes.embeddingModel,
+        embeddingDimensions: embedRes.dimensions,
+        searchTsv: sql`to_tsvector('simple', ${lexicalText})`,
         updatedBy: params.actorUserId,
       })
       .returning();
+
+    if (
+      embedRes.embedding &&
+      embedRes.embeddingModel &&
+      embedRes.dimensions
+    ) {
+      await vectorStore.upsertQaVector(tx, {
+        qaEntryId: id,
+        embeddingModel: embedRes.embeddingModel,
+        dimensions: embedRes.dimensions,
+        embedding: embedRes.embedding,
+        isActive: isQaActive,
+      });
+    }
 
     if (params.input.departmentIds.length > 0) {
       const validDepts = await tx
@@ -785,6 +921,8 @@ export async function updateQaEntry(params: {
   const mergedAnswer = params.input.officialAnswer ?? existing.officialAnswer;
   const mergedKeywords = params.input.keywords ?? existing.keywords;
   const mergedCategory = params.input.category ?? existing.category;
+  const mergedScope = params.input.scope ?? existing.scope;
+  const mergedStatus = params.input.status ?? existing.status;
 
   const normalizedSearchText = buildQaSearchText({
     question: mergedQuestion,
@@ -793,10 +931,16 @@ export async function updateQaEntry(params: {
     keywords: mergedKeywords,
     category: mergedCategory,
   });
+  const lexicalText = buildLexicalIndexString(
+    `${mergedQuestion}\n${mergedAnswer}`,
+    [...mergedAlts, ...mergedKeywords, mergedCategory]
+  );
 
-  const embeddingJson = await tryComputeEmbedding(
+  const embedRes = await tryComputeEmbeddingWithModel(
     `${mergedQuestion}\n${mergedAlts.join('\n')}\n${mergedAnswer}`
   );
+  const isQaActive = mergedStatus === 'published' && mergedScope !== 'restricted';
+  const vectorStore = getVectorStoreAdapter();
 
   await db.transaction(async (tx) => {
     const { departmentIds, ...rest } = params.input;
@@ -805,11 +949,37 @@ export async function updateQaEntry(params: {
       .set({
         ...rest,
         normalizedSearchText,
-        ...(embeddingJson ? { embeddingJson } : {}),
+        searchTsv: sql`to_tsvector('simple', ${lexicalText})`,
+        ...(embedRes.embedding
+          ? {
+              embeddingJson: embedRes.embedding,
+              embeddingModel: embedRes.embeddingModel,
+              embeddingDimensions: embedRes.dimensions,
+            }
+          : {}),
         updatedBy: params.actorUserId,
         updatedAt: new Date(),
       })
       .where(eq(knowledgeQaEntries.id, params.id));
+
+    if (
+      embedRes.embedding &&
+      embedRes.embeddingModel &&
+      embedRes.dimensions
+    ) {
+      await vectorStore.upsertQaVector(tx, {
+        qaEntryId: params.id,
+        embeddingModel: embedRes.embeddingModel,
+        dimensions: embedRes.dimensions,
+        embedding: embedRes.embedding,
+        isActive: isQaActive,
+      });
+    } else {
+      await tx
+        .update(knowledgeQaVectors)
+        .set({ isActive: isQaActive })
+        .where(eq(knowledgeQaVectors.qaEntryId, params.id));
+    }
 
     if (departmentIds !== undefined) {
       await tx
@@ -854,7 +1024,10 @@ export async function deleteQaEntry(params: {
   });
   if (!existing) return null;
 
-  await db.delete(knowledgeQaEntries).where(eq(knowledgeQaEntries.id, params.id));
+  await db.transaction(async (tx) => {
+    await getVectorStoreAdapter().deleteQaVector(tx, params.id);
+    await tx.delete(knowledgeQaEntries).where(eq(knowledgeQaEntries.id, params.id));
+  });
 
   await recordAuditLog({
     actorUserId: params.actorUserId,
@@ -871,7 +1044,7 @@ export async function deleteQaEntry(params: {
 
 export async function getKnowledgeDocumentDownload(documentId: string) {
   const doc = await db.query.knowledgeDocuments.findFirst({
-    where: eq(knowledgeDocuments.id, documentId),
+    where: and(eq(knowledgeDocuments.id, documentId)),
   });
   if (!doc) return null;
 
@@ -884,4 +1057,3 @@ export async function getKnowledgeDocumentDownload(documentId: string) {
     buffer,
   };
 }
-

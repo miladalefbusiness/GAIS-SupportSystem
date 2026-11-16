@@ -35,6 +35,21 @@ export const updateAiProviderSettingsSchema = z.object({
     .regex(/^(0(\.\d+)?|1(\.0+)?)$/, 'مقدار دما باید بین ۰ تا ۱ باشد')
     .default('0.1'),
   globalEnabled: z.boolean().default(false),
+  rerankerMode: z
+    .enum(['none', 'cross_feature', 'llm', 'http_cross_encoder'])
+    .optional()
+    .default('cross_feature'),
+  rerankerEndpointUrl: z
+    .string()
+    .trim()
+    .max(300)
+    .optional()
+    .nullable()
+    .transform((v) => (v && v.length > 0 ? v : null)),
+  cragMaxIterations: z.coerce.number().int().min(0).max(3).optional().default(2),
+  cragMaxModelCalls: z.coerce.number().int().min(0).max(4).optional().default(2),
+  cragEnableLlmJudge: z.boolean().optional().default(false),
+  enableLlmQueryTransform: z.boolean().optional().default(false),
 });
 
 export const updateDepartmentAiSettingsSchema = z.object({
