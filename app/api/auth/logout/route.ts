@@ -6,6 +6,7 @@ import {
   getCurrentSession,
   revokeDbSession,
 } from '@/src/core/auth/auth.ts';
+import { buildSessionCookieOptions } from '@/src/core/auth/cookie-options.ts';
 
 export async function POST(req: NextRequest) {
   const { ipAddress, userAgent } = extractRequestContext(req.headers);
@@ -29,13 +30,11 @@ export async function POST(req: NextRequest) {
   }
 
   const response = NextResponse.json({ ok: true });
-  response.cookies.set(APP_SESSION_COOKIE, '', {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
-    path: '/',
-    maxAge: 0,
-  });
+  response.cookies.set(
+    APP_SESSION_COOKIE,
+    '',
+    buildSessionCookieOptions(req, { maxAge: 0 })
+  );
 
   return response;
 }

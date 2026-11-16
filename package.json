@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "clean": "next clean",
     "test": "vitest run",
+    "check": "tsc --noEmit && npm run lint && npm test",
     "db:generate": "drizzle-kit generate --config=src/db/drizzle.config.ts",
     "db:migrate": "tsx scripts/migrate.ts",
     "db:bootstrap": "tsx scripts/bootstrap.ts"

@@ -18,7 +18,7 @@ export const dynamic = 'force-dynamic';
 export default async function AdminStoragePage() {
   const session = await getCurrentSession();
   if (!session) redirect('/login');
-  if (session.user.mustChangePassword) redirect('/auth/change-password');
+  if (session.user.mustChangePassword) redirect('/change-password');
 
   if (!canManageStorageAdmin(session.access)) {
     return (

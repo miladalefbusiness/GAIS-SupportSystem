@@ -16,7 +16,7 @@ export default async function WorkspaceLayout({
     redirect('/login');
   }
   if (session.user.mustChangePassword) {
-    redirect('/auth/change-password');
+    redirect('/change-password');
   }
 
   const platformConfig = await getPlatformSettings();

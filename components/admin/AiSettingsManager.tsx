@@ -4,6 +4,8 @@ import { useState } from 'react';
 import {
   Activity,
   CheckCircle2,
+  Eye,
+  EyeOff,
   KeyRound,
   Loader2,
   Save,
@@ -66,6 +68,7 @@ export function AiSettingsManager({
   const [providerName, setProviderName] = useState(initialProvider.providerName);
   const [baseUrl, setBaseUrl] = useState(initialProvider.baseUrl || '');
   const [apiKeyInput, setApiKeyInput] = useState('');
+  const [showApiKey, setShowApiKey] = useState(false);
   const [clearApiKey, setClearApiKey] = useState(false);
   const [chatModel, setChatModel] = useState(initialProvider.chatModel);
   const [embeddingModel, setEmbeddingModel] = useState(
@@ -275,8 +278,8 @@ export function AiSettingsManager({
                 <span>{lastTestBanner.messageFa}</span>
               </span>
               {lastTestBanner.latencyMs !== undefined && (
-                <span className="font-[family-name:var(--font-mono)] tabular-nums">
-                  {lastTestBanner.latencyMs}ms
+                <span className="tabular-nums whitespace-nowrap">
+                  {toPersianDigits(lastTestBanner.latencyMs)} میلی‌ثانیه
                 </span>
               )}
             </div>
@@ -308,7 +311,7 @@ export function AiSettingsManager({
                       }
                     }
                   }}
-                  className="w-full h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
+                  className="w-full h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
                 >
                   <option value="gemini">Google Gemini (@google/genai)</option>
                   <option value="openai_compatible">
@@ -386,15 +389,26 @@ export function AiSettingsManager({
                     : 'کلید تنظیم نشده'}
                 </span>
               </Label>
-              <Input
-                id="api-key"
-                type="password"
-                dir="ltr"
-                value={apiKeyInput}
-                onChange={(e) => setApiKeyInput(e.target.value)}
-                placeholder="کلید جدید را در صورت نیاز وارد کنید..."
-                autoComplete="new-password"
-              />
+              <div className="relative">
+                <Input
+                  id="api-key"
+                  type={showApiKey ? 'text' : 'password'}
+                  dir="ltr"
+                  value={apiKeyInput}
+                  onChange={(e) => setApiKeyInput(e.target.value)}
+                  placeholder="کلید جدید را در صورت نیاز وارد کنید..."
+                  autoComplete="new-password"
+                  className="pl-10 text-left"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowApiKey((v) => !v)}
+                  aria-label={showApiKey ? 'مخفی کردن کلید API' : 'نمایش کلید API'}
+                  className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
+                >
+                  {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
               {provider.hasStoredApiKey && (
                 <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer pt-1">
                   <input
@@ -559,7 +573,7 @@ export function AiSettingsManager({
                           welcomeMessageFa: e.target.value,
                         })
                       }
-                      className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-xs"
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
                     />
                   </div>
                   <div className="space-y-1.5">
@@ -572,7 +586,7 @@ export function AiSettingsManager({
                           fallbackMessageFa: e.target.value,
                         })
                       }
-                      className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-xs"
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
                     />
                   </div>
                 </div>

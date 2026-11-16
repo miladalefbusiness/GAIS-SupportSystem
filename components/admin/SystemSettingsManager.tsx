@@ -140,7 +140,7 @@ export function SystemSettingsManager({
                 onChange={(e) =>
                   setForm((prev) => ({ ...prev, heroDescriptionFa: e.target.value }))
                 }
-                className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
               />
             </div>
 
@@ -191,7 +191,7 @@ export function SystemSettingsManager({
                       themeAccent: e.target.value as ThemeAccentPreset,
                     }))
                   }
-                  className="w-full h-9 rounded-md border border-slate-200 bg-white px-3 text-sm"
+                  className="w-full h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
                 >
                   {THEME_ACCENT_OPTIONS.map((preset) => (
                     <option key={preset} value={preset}>
@@ -212,7 +212,7 @@ export function SystemSettingsManager({
                     }))
                   }
                 />
-                <span>نمایش معرفی فضاهای کاری چهارگانه در صفحه عمومی</span>
+                <span>نمایش بخش راهنمای ۳ گام دریافت پشتیبانی در صفحه عمومی</span>
               </label>
             </CardContent>
           </Card>
@@ -241,7 +241,7 @@ export function SystemSettingsManager({
                         | 'urgent',
                     }))
                   }
-                  className="w-full h-9 rounded-md border border-slate-200 bg-white px-3 text-sm"
+                  className="w-full h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
                 >
                   <option value="low">کم</option>
                   <option value="normal">عادی (پیش‌فرض)</option>

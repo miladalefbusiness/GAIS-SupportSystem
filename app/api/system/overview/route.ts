@@ -60,7 +60,7 @@ export async function GET() {
       permissions: session.access.permissions,
     },
     foundation: {
-      phase: 1,
+      phase: 7,
       version: process.env.APP_VERSION || '0.1.0',
       databaseOk: dbOk,
       counts,

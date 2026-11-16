@@ -379,7 +379,7 @@ export function DepartmentsManager({
               <CardTitle className="text-base">فهرست دپارتمان‌های سازمانی</CardTitle>
             </div>
             <div className="relative w-full sm:w-72">
-              <Search className="h-4 w-4 text-slate-400 absolute right-3 top-3 pointer-events-none" />
+              <Search className="h-4 w-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
               <Input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}

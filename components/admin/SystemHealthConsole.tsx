@@ -196,8 +196,8 @@ export function SystemHealthConsole({
             </CardDescription>
             <CardTitle className="text-lg flex items-center gap-2">
               <Server className="h-5 w-5 text-indigo-700" />
-              <span>
-                v{data.runtime.appVersion} (فاز {toPersianDigits(data.runtime.phase)})
+              <span dir="ltr" className="font-[family-name:var(--font-mono)]">
+                v{data.runtime.appVersion}
               </span>
             </CardTitle>
           </CardHeader>

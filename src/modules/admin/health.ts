@@ -91,7 +91,7 @@ export async function getSystemHealthDiagnostics() {
     checkedAt: now.toISOString(),
     runtime: {
       appVersion: env.APP_VERSION,
-      phase: 6,
+      phase: 7,
       nodeVersion: process.version,
       nodeEnv: env.NODE_ENV,
       uptimeSeconds: Math.floor(process.uptime()),

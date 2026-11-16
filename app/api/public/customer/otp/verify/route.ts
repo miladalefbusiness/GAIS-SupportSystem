@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { extractRequestContext } from '@/src/core/audit/audit.ts';
+import { buildSessionCookieOptions } from '@/src/core/auth/cookie-options.ts';
 import { logger } from '@/src/core/logging/logger.ts';
 import { verifyCustomerOtpSchema } from '@/src/modules/customers/schemas.ts';
 import {
@@ -35,13 +36,11 @@ export async function POST(req: NextRequest) {
       expiresAt: result.expiresAt.toISOString(),
     });
 
-    response.cookies.set(CUSTOMER_SESSION_COOKIE, result.rawSessionToken, {
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production',
-      path: '/',
-      expires: result.expiresAt,
-    });
+    response.cookies.set(
+      CUSTOMER_SESSION_COOKIE,
+      result.rawSessionToken,
+      buildSessionCookieOptions(req, { expires: result.expiresAt })
+    );
 
     return response;
   } catch (error) {

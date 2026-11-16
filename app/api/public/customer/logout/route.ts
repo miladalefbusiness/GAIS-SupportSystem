@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { buildSessionCookieOptions } from '@/src/core/auth/cookie-options.ts';
 import {
   CUSTOMER_SESSION_COOKIE,
   revokeCustomerSessionByToken,
@@ -11,12 +12,10 @@ export async function POST(req: NextRequest) {
   await revokeCustomerSessionByToken(rawToken);
 
   const response = NextResponse.json({ ok: true });
-  response.cookies.set(CUSTOMER_SESSION_COOKIE, '', {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
-    path: '/',
-    maxAge: 0,
-  });
+  response.cookies.set(
+    CUSTOMER_SESSION_COOKIE,
+    '',
+    buildSessionCookieOptions(req, { maxAge: 0 })
+  );
   return response;
 }

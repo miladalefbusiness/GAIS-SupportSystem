@@ -449,7 +449,7 @@ export function OperatorsManager({
               </select>
 
               <div className="relative w-full sm:w-64">
-                <Search className="h-4 w-4 text-slate-400 absolute right-3 top-3 pointer-events-none" />
+                <Search className="h-4 w-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <Input
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}

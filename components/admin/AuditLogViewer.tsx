@@ -6,6 +6,7 @@ import {
   Eye,
   Loader2,
   RefreshCw,
+  RotateCcw,
   Search,
   Shield,
 } from 'lucide-react';
@@ -67,16 +68,29 @@ export function AuditLogViewer({
   const [loading, setLoading] = useState(false);
   const [inspectItem, setInspectItem] = useState<AuditLogItemDto | null>(null);
 
-  async function fetchAuditPage(nextPage = 1) {
+  async function fetchAuditPage(
+    nextPage = 1,
+    overrides?: {
+      q?: string;
+      actionPrefix?: string;
+      actorType?: string;
+      targetType?: string;
+    }
+  ) {
     setLoading(true);
     try {
+      const nextQ = overrides?.q ?? q;
+      const nextAction = overrides?.actionPrefix ?? actionPrefix;
+      const nextActor = overrides?.actorType ?? actorType;
+      const nextTarget = overrides?.targetType ?? targetType;
+
       const qs = new URLSearchParams();
       qs.set('page', String(nextPage));
       qs.set('pageSize', '25');
-      if (q.trim()) qs.set('q', q.trim());
-      if (actionPrefix) qs.set('action', actionPrefix);
-      if (actorType) qs.set('actorType', actorType);
-      if (targetType) qs.set('targetType', targetType);
+      if (nextQ.trim()) qs.set('q', nextQ.trim());
+      if (nextAction) qs.set('action', nextAction);
+      if (nextActor) qs.set('actorType', nextActor);
+      if (nextTarget) qs.set('targetType', nextTarget);
 
       const res = await fetch(`/api/admin/audit?${qs.toString()}`);
       const json = await res.json();
@@ -147,19 +161,20 @@ export function AuditLogViewer({
             className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5"
           >
             <div className="relative lg:col-span-2">
-              <Search className="h-3.5 w-3.5 text-slate-400 absolute right-2.5 top-2.5" />
+              <Search className="h-3.5 w-3.5 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
               <Input
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
                 placeholder="جستجو در رویداد، نام کاربر، شناسه هدف یا IP..."
-                className="h-9 pr-8 text-xs"
+                className="h-9 pr-9 text-xs"
               />
             </div>
 
             <select
+              aria-label="فیلتر حوزه رویداد"
               value={actionPrefix}
               onChange={(e) => setActionPrefix(e.target.value)}
-              className="h-9 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700"
+              className="h-9 rounded-lg border border-slate-200 bg-white px-2.5 text-xs text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
             >
               <option value="">همه حوزه‌های رویداد</option>
               <option value="auth.">احراز هویت کارکنان (auth.*)</option>
@@ -172,9 +187,10 @@ export function AuditLogViewer({
             </select>
 
             <select
+              aria-label="فیلتر عامل"
               value={actorType}
               onChange={(e) => setActorType(e.target.value)}
-              className="h-9 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700"
+              className="h-9 rounded-lg border border-slate-200 bg-white px-2.5 text-xs text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
             >
               <option value="">همه عامل‌ها</option>
               <option value="user">کاربر (user)</option>
@@ -184,9 +200,10 @@ export function AuditLogViewer({
 
             <div className="flex items-center gap-2">
               <select
+                aria-label="فیلتر نوع هدف"
                 value={targetType}
                 onChange={(e) => setTargetType(e.target.value)}
-                className="flex-1 h-9 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700"
+                className="flex-1 min-w-0 h-9 rounded-lg border border-slate-200 bg-white px-2.5 text-xs text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
               >
                 <option value="">همه اهداف</option>
                 {data.targetTypes.map((t) => (
@@ -195,9 +212,32 @@ export function AuditLogViewer({
                   </option>
                 ))}
               </select>
-              <Button type="submit" size="sm" className="h-9">
+              <Button type="submit" size="sm" className="h-9 whitespace-nowrap">
                 اعمال
               </Button>
+              {(q || actionPrefix || actorType || targetType) && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-9 px-2 text-slate-500"
+                  title="پاک کردن فیلترها"
+                  onClick={() => {
+                    setQ('');
+                    setActionPrefix('');
+                    setActorType('');
+                    setTargetType('');
+                    void fetchAuditPage(1, {
+                      q: '',
+                      actionPrefix: '',
+                      actorType: '',
+                      targetType: '',
+                    });
+                  }}
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                </Button>
+              )}
             </div>
           </form>
         </CardHeader>

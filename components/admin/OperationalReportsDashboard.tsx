@@ -197,7 +197,7 @@ export function OperationalReportsDashboard({
               setDays(next);
               void reloadReports(next, departmentId);
             }}
-            className="h-9 rounded-md border border-slate-200 bg-white px-3 text-xs text-slate-700"
+            className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
           >
             <option value="7">۷ روز گذشته</option>
             <option value="30">۳۰ روز گذشته</option>
@@ -213,7 +213,7 @@ export function OperationalReportsDashboard({
               setDepartmentId(nextDept);
               void reloadReports(days, nextDept);
             }}
-            className="h-9 rounded-md border border-slate-200 bg-white px-3 text-xs text-slate-700"
+            className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
           >
             <option value="">همه دپارتمان‌ها</option>
             {data.departments.map((d) => (
@@ -360,14 +360,14 @@ export function OperationalReportsDashboard({
           </div>
 
           <Card>
-            <CardHeader className="flex flex-row items-center justify-between gap-4">
+            <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
                 <CardTitle className="text-base">آمار تیکت به تفکیک دپارتمان</CardTitle>
                 <CardDescription>
                   تعداد تیکت‌های باز، حل‌شده و میانگین زمان حل تیکت (ساعت)
                 </CardDescription>
               </div>
-              <Button asChild variant="outline" size="sm">
+              <Button asChild variant="outline" size="sm" className="w-fit whitespace-nowrap shrink-0">
                 <a href={exportUrl('tickets')}>
                   <Download className="h-4 w-4" />
                   <span>خروجی CSV تیکت‌ها</span>
@@ -465,14 +465,14 @@ export function OperationalReportsDashboard({
         {/* Assignments Tab */}
         <TabsContent value="assignments" className="space-y-6">
           <Card>
-            <CardHeader className="flex flex-row items-center justify-between gap-4">
+            <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
                 <CardTitle className="text-base">تفکیک بر اساس روش توزیع و ارجاع</CardTitle>
                 <CardDescription>
                   بررسی عملکرد موتور توزیع خودکار در مقایسه با ارجاعات دستی
                 </CardDescription>
               </div>
-              <Button asChild variant="outline" size="sm">
+              <Button asChild variant="outline" size="sm" className="w-fit whitespace-nowrap shrink-0">
                 <a href={exportUrl('assignments')}>
                   <Download className="h-4 w-4" />
                   <span>خروجی CSV ارجاعات</span>
@@ -551,7 +551,7 @@ export function OperationalReportsDashboard({
         {/* Operators Activity Tab */}
         <TabsContent value="operators">
           <Card>
-            <CardHeader className="flex flex-row items-center justify-between gap-4">
+            <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
                 <CardTitle className="text-base flex items-center gap-2">
                   <Activity className="h-4 w-4 text-blue-700" />
@@ -562,7 +562,7 @@ export function OperationalReportsDashboard({
                   فایل
                 </CardDescription>
               </div>
-              <Button asChild variant="outline" size="sm">
+              <Button asChild variant="outline" size="sm" className="w-fit whitespace-nowrap shrink-0">
                 <a href={exportUrl('operators')}>
                   <Download className="h-4 w-4" />
                   <span>خروجی CSV اپراتورها</span>
@@ -632,7 +632,7 @@ export function OperationalReportsDashboard({
         {/* AI Summary Tab */}
         <TabsContent value="ai">
           <Card>
-            <CardHeader className="flex flex-row items-center justify-between gap-4">
+            <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
                 <CardTitle className="text-base flex items-center gap-2">
                   <BarChart3 className="h-4 w-4 text-blue-700" />
@@ -643,7 +643,7 @@ export function OperationalReportsDashboard({
                   ورودی / {toPersianDigits(data.aiSummary.completionTokens)} خروجی
                 </CardDescription>
               </div>
-              <Button asChild variant="outline" size="sm">
+              <Button asChild variant="outline" size="sm" className="w-fit whitespace-nowrap shrink-0">
                 <Link href="/workspace/admin/ai-reports">گزارش تفصیلی منابع AI</Link>
               </Button>
             </CardHeader>

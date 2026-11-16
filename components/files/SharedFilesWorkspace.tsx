@@ -674,15 +674,15 @@ export function SharedFilesWorkspace({
                     extension: extensionFilter,
                   });
                 }}
-                className="flex flex-wrap items-center gap-2"
+                className="flex flex-wrap items-center gap-2 w-full md:w-auto"
               >
-                <div className="relative">
-                  <Search className="h-3.5 w-3.5 text-slate-400 absolute right-2.5 top-2.5" />
+                <div className="relative flex-1 sm:flex-initial">
+                  <Search className="h-3.5 w-3.5 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <Input
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     placeholder="جستجوی نام فایل یا پوشه..."
-                    className="h-8 pr-8 w-52 text-xs"
+                    className="h-9 pr-8 w-full sm:w-52 text-xs"
                   />
                 </div>
                 <select
@@ -692,7 +692,7 @@ export function SharedFilesWorkspace({
                     setExtensionFilter(nextExt);
                     void loadWorkspace({ extension: nextExt });
                   }}
-                  className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700"
+                  className="h-9 rounded-lg border border-slate-200 bg-white px-2.5 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-600"
                 >
                   <option value="">همه فرمت‌ها</option>
                   {data.policy.allowedExtensions.map((ext) => (
@@ -701,7 +701,7 @@ export function SharedFilesWorkspace({
                     </option>
                   ))}
                 </select>
-                <Button type="submit" variant="outline" size="sm" className="h-8 text-xs">
+                <Button type="submit" variant="outline" size="sm" className="h-9 text-xs">
                   جستجو
                 </Button>
               </form>

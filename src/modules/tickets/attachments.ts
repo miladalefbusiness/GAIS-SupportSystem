@@ -41,6 +41,31 @@ export function sanitizeAttachmentFilename(filename: string): string {
   return trimmed.slice(0, 120);
 }
 
+function hasExecutableOrHtmlHeader(buffer: Buffer): boolean {
+  if (buffer.length >= 2 && buffer[0] === 0x4d && buffer[1] === 0x5a) {
+    return true;
+  }
+  if (
+    buffer.length >= 4 &&
+    buffer[0] === 0x7f &&
+    buffer[1] === 0x45 &&
+    buffer[2] === 0x4c &&
+    buffer[3] === 0x46
+  ) {
+    return true;
+  }
+  if (buffer.subarray(0, 2).toString('utf8') === '#!') {
+    return true;
+  }
+  const head = buffer.subarray(0, 512).toString('utf8').trimStart().toLowerCase();
+  return (
+    head.startsWith('<!doctype html') ||
+    head.startsWith('<html') ||
+    head.startsWith('<script') ||
+    head.startsWith('<svg')
+  );
+}
+
 function detectExtensionAndValidateMagic(
   filename: string,
   buffer: Buffer
@@ -52,6 +77,10 @@ function detectExtensionAndValidateMagic(
 
   if (!ALLOWED_EXTENSIONS.has(ext)) {
     throw new Error('UNSUPPORTED_ATTACHMENT_TYPE');
+  }
+
+  if (hasExecutableOrHtmlHeader(buffer)) {
+    throw new Error('INVALID_ATTACHMENT_SIGNATURE');
   }
 
   if (ext === 'png') {
@@ -129,29 +158,34 @@ async function scanBufferWithOptionalAv(buffer: Buffer): Promise<'skipped' | 'cl
   const host = (process.env.CLAMAV_HOST || '127.0.0.1').trim();
   const port = Number(process.env.CLAMAV_PORT || 3310);
 
-  const response = await new Promise<string>((resolve, reject) => {
-    const socket = net.createConnection({ host, port });
-    const chunks: Buffer[] = [];
-    socket.setTimeout(10000);
+  let response: string;
+  try {
+    response = await new Promise<string>((resolve, reject) => {
+      const socket = net.createConnection({ host, port });
+      const chunks: Buffer[] = [];
+      socket.setTimeout(10000);
 
-    socket.on('connect', () => {
-      socket.write('zINSTREAM\0');
-      const lenBuf = Buffer.allocUnsafe(4);
-      lenBuf.writeUInt32BE(buffer.length, 0);
-      socket.write(lenBuf);
-      socket.write(buffer);
-      const endBuf = Buffer.alloc(4, 0);
-      socket.write(endBuf);
-    });
+      socket.on('connect', () => {
+        socket.write('zINSTREAM\0');
+        const lenBuf = Buffer.allocUnsafe(4);
+        lenBuf.writeUInt32BE(buffer.length, 0);
+        socket.write(lenBuf);
+        socket.write(buffer);
+        const endBuf = Buffer.alloc(4, 0);
+        socket.write(endBuf);
+      });
 
-    socket.on('data', (chunk) => chunks.push(chunk));
-    socket.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    socket.on('timeout', () => {
-      socket.destroy();
-      reject(new Error('AV_SCAN_TIMEOUT'));
+      socket.on('data', (chunk) => chunks.push(chunk));
+      socket.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+      socket.on('timeout', () => {
+        socket.destroy();
+        reject(new Error('AV_SCAN_UNAVAILABLE'));
+      });
+      socket.on('error', () => reject(new Error('AV_SCAN_UNAVAILABLE')));
     });
-    socket.on('error', (err) => reject(err));
-  });
+  } catch {
+    throw new Error('AV_SCAN_UNAVAILABLE');
+  }
 
   if (response.includes('FOUND')) {
     logger.warn('ticket.attachment_malware_detected', { clamavResponse: response.trim() });

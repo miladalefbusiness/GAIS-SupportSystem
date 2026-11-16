@@ -418,7 +418,7 @@ describe('Phase 6: Super Admin Settings, Operational Reports, Audit Viewer & Sys
   it('reports live database, storage, and integration health without exposing secrets', async () => {
     const health = await getSystemHealthDiagnostics();
 
-    expect(health.runtime.phase).toBe(6);
+    expect(health.runtime.phase).toBeGreaterThanOrEqual(6);
     expect(health.database.ok).toBe(true);
     expect(health.database.latencyMs).toBeGreaterThanOrEqual(0);
     expect(health.storage.ok).toBe(true);

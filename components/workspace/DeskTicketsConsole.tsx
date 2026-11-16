@@ -127,6 +127,18 @@ export function DeskTicketsConsole({
     setAppliedQuery(searchInput.trim());
   }
 
+  const hasActiveFilters =
+    status !== 'all' || priority !== 'all' || sort !== 'newest' || Boolean(appliedQuery);
+
+  function resetFilters() {
+    setStatus('all');
+    setPriority('all');
+    setSort('newest');
+    setSearchInput('');
+    setAppliedQuery('');
+    setPage(1);
+  }
+
   return (
     <Card className="bg-white">
       <CardHeader className="border-b border-slate-100 space-y-4">
@@ -135,16 +147,28 @@ export function DeskTicketsConsole({
             <Ticket className="h-5 w-5 text-blue-700" />
             <CardTitle className="text-base">{title}</CardTitle>
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => void fetchQueue()}
-            disabled={loading}
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
-            <span>بروزرسانی</span>
-          </Button>
+          <div className="flex items-center gap-2">
+            {hasActiveFilters && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={resetFilters}
+              >
+                پاک کردن فیلترها
+              </Button>
+            )}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => void fetchQueue()}
+              disabled={loading}
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+              <span>بروزرسانی</span>
+            </Button>
+          </div>
         </div>
 
         {/* Queue Tabs */}
@@ -201,7 +225,7 @@ export function DeskTicketsConsole({
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
             />
-            <Button type="submit" variant="outline" size="sm">
+            <Button type="submit" variant="outline" size="sm" className="h-10 px-3">
               <Search className="h-4 w-4" />
             </Button>
           </form>
@@ -213,7 +237,7 @@ export function DeskTicketsConsole({
               setStatus(e.target.value);
               setPage(1);
             }}
-            className="h-9 rounded-lg border border-slate-300 bg-white px-2.5 text-xs text-slate-800"
+            className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-600"
           >
             <option value="all">همه وضعیت‌ها</option>
             <option value="waiting_for_operator">در انتظار اپراتور</option>
@@ -231,7 +255,7 @@ export function DeskTicketsConsole({
               setPriority(e.target.value);
               setPage(1);
             }}
-            className="h-9 rounded-lg border border-slate-300 bg-white px-2.5 text-xs text-slate-800"
+            className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-600"
           >
             <option value="all">همه اولویت‌ها</option>
             <option value="urgent">فوری</option>
@@ -247,7 +271,7 @@ export function DeskTicketsConsole({
               setSort(e.target.value as 'newest' | 'oldest' | 'priority');
               setPage(1);
             }}
-            className="h-9 rounded-lg border border-slate-300 bg-white px-2.5 text-xs text-slate-800"
+            className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-600"
           >
             <option value="newest">جدیدترین پیام</option>
             <option value="oldest">قدیمی‌ترین</option>

@@ -13,6 +13,7 @@ import {
   Send,
   Sparkles,
   User,
+  X,
 } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -27,6 +28,7 @@ import {
 } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { formatBytesFa, toPersianDigits } from '@/src/lib/jalali';
 import {
   TICKET_PRIORITY_LABEL_FA,
   TICKET_STATUS_LABEL_FA,
@@ -119,6 +121,22 @@ export interface OperatorTicketDetailPayload {
     nameFa: string;
   }>;
 }
+
+const ACTIVITY_LABELS_FA: Record<string, string> = {
+  ticket_created: 'ایجاد تیکت',
+  converted_from_ai: 'تبدیل از گفت‌وگوی هوشمند',
+  assigned: 'تخصیص به اپراتور',
+  reassigned: 'تغییر اپراتور مسئول',
+  unassigned: 'بازگشت به صف دپارتمان',
+  transferred: 'انتقال بین دپارتمانی',
+  department_transferred: 'انتقال به دپارتمان جدید',
+  status_changed: 'تغییر وضعیت تیکت',
+  priority_changed: 'تغییر اولویت',
+  customer_replied: 'پاسخ جدید مشتری',
+  operator_replied: 'ارسال پاسخ رسمی اپراتور',
+  internal_note_added: 'ثبت یادداشت داخلی',
+  ai_toggled: 'تغییر وضعیت پاسخگویی هوشمند',
+};
 
 function formatDateFa(iso: string): string {
   try {
@@ -342,10 +360,10 @@ export function TicketDetailWorkspace({
         {/* Conversation & Composer */}
         <div className="lg:col-span-8 space-y-4">
           <Card className="bg-white overflow-hidden">
-            <CardHeader className="border-b border-slate-100 py-3.5 px-5 flex flex-row items-center justify-between">
+            <CardHeader className="border-b border-slate-100 py-3.5 px-5 flex flex-row items-center justify-between gap-2">
               <CardTitle className="text-sm">روند گفت‌وگو و یادداشت‌های داخلی</CardTitle>
-              <span className="text-xs text-slate-500">
-                {detail.messages.length} پیام
+              <span className="text-xs text-slate-500 tabular-nums">
+                {toPersianDigits(detail.messages.length)} پیام
               </span>
             </CardHeader>
 
@@ -359,11 +377,11 @@ export function TicketDetailWorkspace({
                       isInternal
                         ? 'bg-amber-50 border border-amber-300 text-amber-950'
                         : m.senderType === 'customer'
-                        ? 'bg-white border border-slate-200 text-slate-900'
+                        ? 'bg-white border border-slate-200 text-slate-900 ml-6'
                         : m.senderType === 'operator'
                         ? 'bg-blue-700 text-white mr-6'
                         : m.senderType === 'ai_assistant'
-                        ? 'bg-slate-100 border border-slate-200 text-slate-900'
+                        ? 'bg-slate-100 border border-slate-200 text-slate-900 ml-6'
                         : 'bg-slate-100 text-slate-700 text-xs'
                     }`}
                   >
@@ -472,13 +490,39 @@ export function TicketDetailWorkspace({
                   }`}
                 />
 
+                {visibility === 'public' && files.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {files.map((f, idx) => (
+                      <span
+                        key={`${f.name}-${idx}`}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] text-slate-700"
+                      >
+                        <span className="truncate max-w-40">{f.name}</span>
+                        <span className="text-slate-400 tabular-nums">
+                          ({formatBytesFa(f.size)})
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setFiles((prev) => prev.filter((_, i) => i !== idx))
+                          }
+                          aria-label="حذف فایل"
+                          className="text-slate-400 hover:text-red-600 cursor-pointer"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+
                 <div className="flex items-center justify-between gap-3">
                   {visibility === 'public' ? (
-                    <label className="inline-flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
+                    <label className="inline-flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer hover:text-slate-900">
                       <Paperclip className="h-3.5 w-3.5" />
                       <span>
                         {files.length > 0
-                          ? `${files.length} فایل انتخاب شد`
+                          ? `${toPersianDigits(files.length)} فایل انتخاب شد`
                           : 'پیوست فایل در پاسخ'}
                       </span>
                       <input
@@ -770,7 +814,7 @@ export function TicketDetailWorkspace({
                   className="flex items-center justify-between gap-2 border-b border-slate-100 pb-1.5"
                 >
                   <span className="text-slate-700">
-                    {a.activityType} · {a.actorLabel}
+                    {ACTIVITY_LABELS_FA[a.activityType] || a.activityType} · {a.actorLabel}
                   </span>
                   <span className="text-slate-400 tabular-nums shrink-0">
                     {formatDateFa(a.createdAt)}

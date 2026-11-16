@@ -6,7 +6,7 @@ export async function GET() {
   return NextResponse.json({
     status: 'ok',
     service: 'supportdesk',
-    phase: 6,
+    phase: 7,
     version: process.env.APP_VERSION || '0.1.0',
     timestamp: new Date().toISOString(),
   });

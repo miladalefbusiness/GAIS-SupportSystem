@@ -2,20 +2,29 @@
 
 import { useState } from 'react';
 import { signInWithPopup } from 'firebase/auth';
-import { KeyRound, Loader2, LogIn } from 'lucide-react';
+import { Eye, EyeOff, Headset, KeyRound, Loader2, LogIn } from 'lucide-react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { firebaseAuth, googleAuthProvider } from '@/src/lib/firebase';
 
-export function LoginForm() {
-  const router = useRouter();
+export function LoginForm({
+  brandNameFa = 'پورتال پشتیبانی سازمانی',
+}: {
+  brandNameFa?: string;
+}) {
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loadingCreds, setLoadingCreds] = useState(false);
   const [loadingGoogle, setLoadingGoogle] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -39,12 +48,9 @@ export function LoginForm() {
       }
 
       toast.success('ورود با موفقیت انجام شد.');
-      if (data.mustChangePassword) {
-        router.push('/auth/change-password');
-      } else {
-        router.push('/workspace');
-      }
-      router.refresh();
+      const target = data.mustChangePassword ? '/change-password' : '/workspace';
+      window.location.assign(target);
+      return;
     } catch {
       setErrorMessage('ارتباط با سرور برقرار نشد.');
     } finally {
@@ -73,12 +79,9 @@ export function LoginForm() {
       }
 
       toast.success('احراز هویت گوگل تایید شد.');
-      if (data.mustChangePassword) {
-        router.push('/auth/change-password');
-      } else {
-        router.push('/workspace');
-      }
-      router.refresh();
+      const target = data.mustChangePassword ? '/change-password' : '/workspace';
+      window.location.assign(target);
+      return;
     } catch (err) {
       const msg =
         err instanceof Error && err.message.includes('popup-closed')
@@ -93,18 +96,16 @@ export function LoginForm() {
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50 px-4 py-12">
       <div className="w-full max-w-md space-y-6">
-        <div className="text-center space-y-2">
-          <Link
-            href="/"
-            className="text-sm font-medium text-blue-700 hover:underline"
-          >
-            بازگشت به پورتال عمومی
-          </Link>
+        <div className="text-center space-y-2.5">
+          <div className="inline-flex items-center gap-2 text-sm font-semibold text-blue-700">
+            <Headset className="h-4 w-4" />
+            <span>{brandNameFa}</span>
+          </div>
           <h1 className="text-2xl font-bold text-slate-900">
-            ورود به پنل اپراتور و مدیریت
+            ورود به پنل همکاران و مدیریت
           </h1>
           <p className="text-sm text-slate-600">
-            دسترسی محدود به کارکنان و مدیران مجاز سازمان
+            دسترسی اختصاصی اپراتورهای پشتیبانی و مدیران سامانه
           </p>
         </div>
 
@@ -127,7 +128,7 @@ export function LoginForm() {
 
             <form onSubmit={handleCredentialSubmit} className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="identifier">نام کاربری یا ایمیل</Label>
+                <Label htmlFor="identifier">نام کاربری یا ایمیل سازمانی</Label>
                 <Input
                   id="identifier"
                   name="identifier"
@@ -136,23 +137,38 @@ export function LoginForm() {
                   required
                   value={identifier}
                   onChange={(e) => setIdentifier(e.target.value)}
-                  placeholder="superadmin"
+                  placeholder="username"
                 />
               </div>
 
               <div className="space-y-2">
                 <Label htmlFor="password">رمز عبور</Label>
-                <Input
-                  id="password"
-                  name="password"
-                  type="password"
-                  dir="ltr"
-                  autoComplete="current-password"
-                  required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••••"
-                />
+                <div className="relative">
+                  <Input
+                    id="password"
+                    name="password"
+                    type={showPassword ? 'text' : 'password'}
+                    dir="ltr"
+                    autoComplete="current-password"
+                    required
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="••••••••••"
+                    className="pl-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((prev) => !prev)}
+                    aria-label={showPassword ? 'مخفی کردن رمز عبور' : 'نمایش رمز عبور'}
+                    className="absolute left-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-700 cursor-pointer"
+                  >
+                    {showPassword ? (
+                      <EyeOff className="h-4 w-4" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
               </div>
 
               <Button
@@ -190,10 +206,19 @@ export function LoginForm() {
               ) : (
                 <KeyRound className="h-4 w-4" />
               )}
-              <span>ورود با حساب گوگل (Google Sign-In)</span>
+              <span>ورود با حساب گوگل</span>
             </Button>
           </CardContent>
         </Card>
+
+        <div className="text-center">
+          <Link
+            href="/"
+            className="text-xs font-medium text-slate-600 hover:text-blue-700 transition-colors"
+          >
+            بازگشت به پورتال پشتیبانی مشتریان
+          </Link>
+        </div>
       </div>
     </div>
   );

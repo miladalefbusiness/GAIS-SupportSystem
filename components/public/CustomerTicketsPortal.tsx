@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Bot,
   Download,
@@ -9,10 +9,12 @@ import {
   LogOut,
   Paperclip,
   Plus,
+  Search,
   Send,
   ShieldCheck,
   Ticket,
   User,
+  X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -25,6 +27,7 @@ import {
 } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { formatBytesFa, toPersianDigits } from '@/src/lib/jalali';
 import type { PublicDepartmentCard } from '@/src/modules/departments/service';
 import type {
   CustomerTicketDetailDto,
@@ -74,11 +77,32 @@ export function CustomerTicketsPortal({
   const [newFiles, setNewFiles] = useState<File[]>([]);
   const [creating, setCreating] = useState(false);
 
+  const [ticketQuery, setTicketQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
   const [detail, setDetail] = useState<CustomerTicketDetailDto | null>(null);
-  const [loadingDetail, setLoadingDetail] = useState(false);
+  const [loadedTicketId, setLoadedTicketId] = useState<string | null>(null);
   const [replyBody, setReplyBody] = useState('');
   const [replyFiles, setReplyFiles] = useState<File[]>([]);
   const [replying, setReplying] = useState(false);
+
+  const activeDetail =
+    customer && selectedTicketId && detail?.id === selectedTicketId ? detail : null;
+  const isLoadingDetail = Boolean(
+    customer && selectedTicketId && loadedTicketId !== selectedTicketId && !activeDetail
+  );
+
+  const filteredTickets = useMemo(() => {
+    const q = ticketQuery.trim().toLowerCase();
+    return tickets.filter((t) => {
+      if (statusFilter !== 'all' && t.status !== statusFilter) return false;
+      if (!q) return true;
+      return (
+        t.referenceCode.toLowerCase().includes(q) ||
+        t.subject.toLowerCase().includes(q) ||
+        t.departmentNameFa.toLowerCase().includes(q)
+      );
+    });
+  }, [tickets, ticketQuery, statusFilter]);
 
   useEffect(() => {
     if (!customer || !selectedTicketId) {
@@ -101,7 +125,7 @@ export function CustomerTicketsPortal({
         if (active) toast.error('خطا در بارگذاری جزئیات تیکت.');
       })
       .finally(() => {
-        if (active) setLoadingDetail(false);
+        if (active) setLoadedTicketId(selectedTicketId);
       });
     return () => {
       active = false;
@@ -146,6 +170,7 @@ export function CustomerTicketsPortal({
       await onRefreshSession();
       onSelectTicket(data.ticket.id);
       setDetail(data.ticket);
+      setLoadedTicketId(data.ticket.id);
     } catch {
       toast.error('خطای ارتباط با سرور.');
     } finally {
@@ -155,7 +180,7 @@ export function CustomerTicketsPortal({
 
   async function handleSendReply(e: React.FormEvent) {
     e.preventDefault();
-    if (!detail || replying || !replyBody.trim()) return;
+    if (!activeDetail || replying || !replyBody.trim()) return;
 
     setReplying(true);
     try {
@@ -165,7 +190,7 @@ export function CustomerTicketsPortal({
         fd.append('files', file);
       }
 
-      const res = await fetch(`/api/public/tickets/${detail.id}/messages`, {
+      const res = await fetch(`/api/public/tickets/${activeDetail.id}/messages`, {
         method: 'POST',
         body: fd,
       });
@@ -176,6 +201,7 @@ export function CustomerTicketsPortal({
       }
 
       setDetail(data.ticket);
+      setLoadedTicketId(data.ticket?.id ?? activeDetail.id);
       setReplyBody('');
       setReplyFiles([]);
       await onRefreshSession();
@@ -196,7 +222,7 @@ export function CustomerTicketsPortal({
               <div className="flex items-center gap-2">
                 <Ticket className="h-5 w-5 text-blue-700 shrink-0" />
                 <CardTitle className="text-lg">
-                  پورتال ثبت و پیگیری تیکت مشتریان
+                  پورتال ثبت و پیگیری تیکت‌های من
                 </CardTitle>
               </div>
               <CardDescription>
@@ -207,7 +233,7 @@ export function CustomerTicketsPortal({
             </div>
 
             {customer ? (
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
                 <Button
                   type="button"
                   size="sm"
@@ -224,7 +250,7 @@ export function CustomerTicketsPortal({
             ) : (
               <Button type="button" onClick={onOpenAuth}>
                 <ShieldCheck className="h-4 w-4" />
-                <span>احراز هویت و مشاهده تیکت‌ها</span>
+                <span>تأیید هویت و مشاهده تیکت‌ها</span>
               </Button>
             )}
           </div>
@@ -237,12 +263,12 @@ export function CustomerTicketsPortal({
                 onSubmit={handleCreateTicket}
                 className="rounded-xl border border-blue-200 bg-blue-50/30 p-5 space-y-4"
               >
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                   <h3 className="text-sm font-bold text-slate-900">
                     ایجاد تیکت پشتیبانی جدید
                   </h3>
                   <span className="text-xs text-slate-500">
-                    توزیع خودکار به اپراتور مجاز دپارتمان
+                    ارجاع خودکار به کارشناس متخصص دپارتمان
                   </span>
                 </div>
 
@@ -253,7 +279,7 @@ export function CustomerTicketsPortal({
                       id="tkt-dept"
                       value={departmentId || departments[0]?.id || ''}
                       onChange={(e) => setDepartmentId(e.target.value)}
-                      className="w-full h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-900"
+                      className="w-full h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
                     >
                       {departments.map((d) => (
                         <option key={d.id} value={d.id}>
@@ -273,7 +299,7 @@ export function CustomerTicketsPortal({
                           e.target.value as 'low' | 'normal' | 'high' | 'urgent'
                         )
                       }
-                      className="w-full h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-900"
+                      className="w-full h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
                     >
                       <option value="low">کم</option>
                       <option value="normal">عادی</option>
@@ -303,12 +329,12 @@ export function CustomerTicketsPortal({
                     onChange={(e) => setDescription(e.target.value)}
                     placeholder="جزئیات درخواست یا مشکل خود را بنویسید..."
                     required
-                    className="w-full rounded-lg border border-slate-300 bg-white p-3 text-sm text-slate-900"
+                    className="w-full rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600"
                   />
                 </div>
 
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <label className="inline-flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                  <label className="inline-flex items-center gap-2 text-xs text-slate-700 cursor-pointer hover:text-slate-900">
                     <Paperclip className="h-4 w-4 text-slate-500" />
                     <span>افزودن فایل پیوست (PNG، JPEG، WebP، PDF، DOCX، TXT، MD)</span>
                     <input
@@ -322,34 +348,97 @@ export function CustomerTicketsPortal({
                     />
                   </label>
 
-                  <Button type="submit" disabled={creating}>
+                  <Button type="submit" disabled={creating || departments.length === 0}>
                     {creating && <Loader2 className="h-4 w-4 animate-spin" />}
                     <span>ثبت نهایی تیکت</span>
                   </Button>
                 </div>
 
                 {newFiles.length > 0 && (
-                  <p className="text-xs text-slate-600">
-                    فایل‌های انتخاب‌شده:{' '}
-                    {newFiles.map((f) => f.name).join('، ')}
-                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {newFiles.map((f, idx) => (
+                      <span
+                        key={`${f.name}-${idx}`}
+                        className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-700"
+                      >
+                        <span className="truncate max-w-44">{f.name}</span>
+                        <span className="text-[11px] text-slate-400 tabular-nums">
+                          ({formatBytesFa(f.size)})
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setNewFiles((prev) => prev.filter((_, i) => i !== idx))
+                          }
+                          aria-label="حذف پیوست"
+                          className="text-slate-400 hover:text-red-600 cursor-pointer"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
                 )}
               </form>
             )}
 
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
               {/* Ticket History List */}
-              <div className="lg:col-span-5 space-y-2.5">
-                <h3 className="text-xs font-semibold text-slate-500 px-1">
-                  سوابق تیکت‌های شما ({tickets.length})
-                </h3>
+              <div className="lg:col-span-5 space-y-3 min-w-0">
+                <div className="flex items-center justify-between gap-2 px-1">
+                  <h3 className="text-xs font-semibold text-slate-500 tabular-nums">
+                    سوابق تیکت‌های شما ({toPersianDigits(filteredTickets.length)})
+                  </h3>
+                </div>
+
+                {tickets.length > 2 && (
+                  <div className="grid grid-cols-1 sm:grid-cols-5 gap-2">
+                    <div className="relative sm:col-span-3">
+                      <Search className="h-3.5 w-3.5 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <Input
+                        value={ticketQuery}
+                        onChange={(e) => setTicketQuery(e.target.value)}
+                        placeholder="جستجوی کد یا عنوان..."
+                        className="h-9 pr-8 text-xs"
+                      />
+                    </div>
+                    <select
+                      aria-label="فیلتر وضعیت تیکت"
+                      value={statusFilter}
+                      onChange={(e) => setStatusFilter(e.target.value)}
+                      className="sm:col-span-2 h-9 rounded-lg border border-slate-200 bg-white px-2.5 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    >
+                      <option value="all">همه وضعیت‌ها</option>
+                      {Object.entries(TICKET_STATUS_LABEL_FA).map(([key, label]) => (
+                        <option key={key} value={key}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
                 {tickets.length === 0 ? (
                   <div className="rounded-xl border border-dashed border-slate-200 p-6 text-center text-sm text-slate-500">
                     هنوز تیکتی برای شما ثبت نشده است. برای شروع دکمه «ثبت تیکت جدید» را بزنید.
                   </div>
+                ) : filteredTickets.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-slate-200 p-6 text-center text-xs text-slate-500 space-y-2">
+                    <p>تیکتی با فیلتر انتخاب‌شده یافت نشد.</p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTicketQuery('');
+                        setStatusFilter('all');
+                      }}
+                      className="text-blue-700 font-medium hover:underline cursor-pointer"
+                    >
+                      پاک کردن فیلترها
+                    </button>
+                  </div>
                 ) : (
                   <div className="space-y-2 max-h-[460px] overflow-y-auto pl-1">
-                    {tickets.map((t) => {
+                    {filteredTickets.map((t) => {
                       const active = t.id === selectedTicketId;
                       return (
                         <button
@@ -390,17 +479,17 @@ export function CustomerTicketsPortal({
               </div>
 
               {/* Ticket Detail & Timeline */}
-              <div className="lg:col-span-7">
+              <div className="lg:col-span-7 min-w-0">
                 {!selectedTicketId ? (
-                  <div className="h-full min-h-[300px] rounded-xl border border-slate-200 bg-slate-50/60 flex items-center justify-center p-6 text-sm text-slate-500">
-                    یک تیکت را از فهرست سمت راست انتخاب کنید تا جزئیات و تاریخچه پیام‌ها نمایش داده شود.
+                  <div className="h-full min-h-[300px] rounded-xl border border-slate-200 bg-slate-50/60 flex items-center justify-center p-6 text-sm text-slate-500 text-center">
+                    یک تیکت را از فهرست انتخاب کنید تا جزئیات و تاریخچه پیام‌ها نمایش داده شود.
                   </div>
-                ) : loadingDetail ? (
+                ) : isLoadingDetail ? (
                   <div className="h-full min-h-[300px] rounded-xl border border-slate-200 flex items-center justify-center p-6 text-sm text-slate-500 gap-2">
                     <Loader2 className="h-4 w-4 animate-spin text-blue-700" />
-                    <span>در حال بارگذاری تیکت...</span>
+                    <span>در حال بارگذاری جزئیات تیکت...</span>
                   </div>
-                ) : detail ? (
+                ) : activeDetail ? (
                   <div className="rounded-xl border border-slate-200 overflow-hidden flex flex-col">
                     <div className="border-b border-slate-200 bg-slate-50 px-5 py-4 space-y-1.5">
                       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -408,83 +497,105 @@ export function CustomerTicketsPortal({
                           dir="ltr"
                           className="text-xs font-[family-name:var(--font-mono)] font-bold text-blue-700"
                         >
-                          {detail.referenceCode}
+                          {activeDetail.referenceCode}
                         </span>
                         <div className="flex items-center gap-2 text-xs">
                           <span className="rounded bg-white border border-slate-200 px-2 py-0.5 text-slate-700">
-                            {detail.departmentNameFa}
+                            {activeDetail.departmentNameFa}
                           </span>
                           <span className="rounded bg-blue-100 px-2 py-0.5 font-medium text-blue-900">
-                            {TICKET_STATUS_LABEL_FA[detail.status] || detail.status}
+                            {TICKET_STATUS_LABEL_FA[activeDetail.status] || activeDetail.status}
                           </span>
                         </div>
                       </div>
                       <h4 className="text-base font-bold text-slate-900">
-                        {detail.subject}
+                        {activeDetail.subject}
                       </h4>
                     </div>
 
                     <div className="p-5 bg-slate-50/40 space-y-3 max-h-[340px] overflow-y-auto">
-                      {detail.messages.map((m) => (
-                        <div
-                          key={m.id}
-                          className={`rounded-xl p-3.5 text-sm space-y-1.5 ${
-                            m.senderType === 'customer'
-                              ? 'bg-blue-700 text-white mr-6'
-                              : m.senderType === 'operator'
-                              ? 'bg-white border border-emerald-200 text-slate-900 ml-6'
-                              : m.senderType === 'ai_assistant'
-                              ? 'bg-white border border-slate-200 text-slate-800 ml-6'
-                              : 'bg-slate-100 text-slate-700 text-xs'
-                          }`}
-                        >
-                          <div
-                            className={`flex items-center justify-between text-[11px] ${
-                              m.senderType === 'customer'
-                                ? 'text-blue-100'
-                                : 'text-slate-500'
-                            }`}
-                          >
-                            <span className="flex items-center gap-1.5 font-medium">
-                              {m.senderType === 'customer' ? (
-                                <User className="h-3 w-3" />
-                              ) : m.senderType === 'operator' ? (
-                                <Headset className="h-3 w-3 text-emerald-700" />
-                              ) : m.senderType === 'ai_assistant' ? (
-                                <Bot className="h-3 w-3 text-blue-700" />
-                              ) : null}
-                              {m.senderLabel}
-                            </span>
-                            <span className="tabular-nums">
-                              {formatDateFa(m.createdAt)}
-                            </span>
-                          </div>
-                          <p className="whitespace-pre-wrap leading-relaxed">
-                            {m.body}
-                          </p>
-                          {m.attachments.length > 0 && (
-                            <div className="flex flex-wrap gap-2 pt-1">
-                              {m.attachments.map((att) => (
-                                <a
-                                  key={att.id}
-                                  href={`/api/public/tickets/${detail.id}/attachments/${att.id}`}
-                                  className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs ${
-                                    m.senderType === 'customer'
-                                      ? 'bg-blue-800 text-white hover:bg-blue-900'
-                                      : 'bg-slate-100 text-slate-800 hover:bg-slate-200'
-                                  }`}
-                                >
-                                  <Download className="h-3 w-3" />
-                                  <span>{att.originalFilename}</span>
-                                </a>
-                              ))}
+                      {activeDetail.messages.map((m) => {
+                        if (m.senderType === 'system') {
+                          return (
+                            <div
+                              key={m.id}
+                              className="rounded-lg border border-slate-200 bg-slate-100 px-3.5 py-2.5 text-xs text-slate-700 space-y-1"
+                            >
+                              <div className="flex items-center justify-between text-[11px] text-slate-500">
+                                <span className="font-medium">{m.senderLabel}</span>
+                                <span className="tabular-nums">
+                                  {formatDateFa(m.createdAt)}
+                                </span>
+                              </div>
+                              <p className="whitespace-pre-wrap leading-relaxed">
+                                {m.body}
+                              </p>
                             </div>
-                          )}
-                        </div>
-                      ))}
+                          );
+                        }
+
+                        const isCustomer = m.senderType === 'customer';
+                        return (
+                          <div
+                            key={m.id}
+                            className={`flex ${isCustomer ? 'justify-start' : 'justify-end'}`}
+                          >
+                            <div
+                              className={`max-w-[88%] rounded-xl p-3.5 text-sm space-y-1.5 ${
+                                isCustomer
+                                  ? 'bg-blue-700 text-white'
+                                  : m.senderType === 'operator'
+                                  ? 'bg-white border border-emerald-200 text-slate-900'
+                                  : 'bg-white border border-slate-200 text-slate-800'
+                              }`}
+                            >
+                              <div
+                                className={`flex items-center justify-between gap-3 text-[11px] ${
+                                  isCustomer ? 'text-blue-100' : 'text-slate-500'
+                                }`}
+                              >
+                                <span className="flex items-center gap-1.5 font-medium">
+                                  {isCustomer ? (
+                                    <User className="h-3 w-3" />
+                                  ) : m.senderType === 'operator' ? (
+                                    <Headset className="h-3 w-3 text-emerald-700" />
+                                  ) : (
+                                    <Bot className="h-3 w-3 text-blue-700" />
+                                  )}
+                                  {m.senderLabel}
+                                </span>
+                                <span className="tabular-nums">
+                                  {formatDateFa(m.createdAt)}
+                                </span>
+                              </div>
+                              <p className="whitespace-pre-wrap leading-relaxed">
+                                {m.body}
+                              </p>
+                              {m.attachments.length > 0 && (
+                                <div className="flex flex-wrap gap-2 pt-1">
+                                  {m.attachments.map((att) => (
+                                    <a
+                                      key={att.id}
+                                      href={`/api/public/tickets/${activeDetail.id}/attachments/${att.id}`}
+                                      className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs ${
+                                        isCustomer
+                                          ? 'bg-blue-800 text-white hover:bg-blue-900'
+                                          : 'bg-slate-100 text-slate-800 hover:bg-slate-200'
+                                      }`}
+                                    >
+                                      <Download className="h-3 w-3" />
+                                      <span>{att.originalFilename}</span>
+                                    </a>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
 
-                    {detail.status !== 'closed' ? (
+                    {activeDetail.status !== 'closed' ? (
                       <form
                         onSubmit={handleSendReply}
                         className="border-t border-slate-200 bg-white p-4 space-y-2.5"
@@ -494,14 +605,43 @@ export function CustomerTicketsPortal({
                           value={replyBody}
                           onChange={(e) => setReplyBody(e.target.value)}
                           placeholder="پاسخ یا توضیحات تکمیلی خود را بنویسید..."
-                          className="w-full rounded-lg border border-slate-300 bg-white p-2.5 text-sm"
+                          className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
                         />
+
+                        {replyFiles.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5">
+                            {replyFiles.map((f, idx) => (
+                              <span
+                                key={`${f.name}-${idx}`}
+                                className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] text-slate-700"
+                              >
+                                <span className="truncate max-w-36">{f.name}</span>
+                                <span className="text-slate-400 tabular-nums">
+                                  ({formatBytesFa(f.size)})
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setReplyFiles((prev) =>
+                                      prev.filter((_, i) => i !== idx)
+                                    )
+                                  }
+                                  aria-label="حذف فایل پیوست"
+                                  className="text-slate-400 hover:text-red-600 cursor-pointer"
+                                >
+                                  <X className="h-3 w-3" />
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
                         <div className="flex items-center justify-between gap-3">
-                          <label className="inline-flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
+                          <label className="inline-flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer hover:text-slate-900">
                             <Paperclip className="h-3.5 w-3.5" />
                             <span>
                               {replyFiles.length > 0
-                                ? `${replyFiles.length} فایل انتخاب شد`
+                                ? `${toPersianDigits(replyFiles.length)} فایل پیوست انتخاب شد`
                                 : 'پیوست فایل'}
                             </span>
                             <input
@@ -534,7 +674,11 @@ export function CustomerTicketsPortal({
                       </div>
                     )}
                   </div>
-                ) : null}
+                ) : (
+                  <div className="h-full min-h-[300px] rounded-xl border border-slate-200 bg-slate-50/60 flex items-center justify-center p-6 text-sm text-slate-500">
+                    امکان بارگذاری اطلاعات این تیکت وجود ندارد.
+                  </div>
+                )}
               </div>
             </div>
           </CardContent>

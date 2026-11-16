@@ -98,18 +98,27 @@ cmd_backup() {
   pg_db="$(grep '^POSTGRES_DB=' "${ENV_FILE}" | cut -d= -f2- | tr -d '"')"
 
   log "Creating PostgreSQL backup at ${db_dump}..."
-  compose exec -T postgres pg_dump -U "${pg_user:-supportdesk_admin}" "${pg_db:-supportdesk}" | gzip -9 > "${db_dump}"
+  compose exec -T postgres pg_dump --clean --if-exists --no-owner --no-privileges -U "${pg_user:-supportdesk_admin}" "${pg_db:-supportdesk}" | gzip -9 > "${db_dump}"
+  gzip -t "${db_dump}" || err "PostgreSQL backup archive verification failed."
 
   log "Creating persistent storage backup at ${files_archive}..."
   compose exec -T app tar -czf - -C /var/lib/supportdesk/storage . > "${files_archive}"
+  tar -tzf "${files_archive}" >/dev/null || err "Storage backup archive verification failed."
 
-  log "Backup completed: ${db_dump} and ${files_archive}"
+  log "Backup completed and verified: ${db_dump} and ${files_archive}"
 }
 
 cmd_restore() {
   local db_dump="${1:-}"
   local files_archive="${2:-}"
   [ -n "${db_dump}" ] && [ -f "${db_dump}" ] || err "Usage: supportdesk restore <db_dump.sql.gz> [storage.tar.gz]"
+
+  log "Verifying backup archive integrity before modifying running services..."
+  gzip -t "${db_dump}" || err "Corrupt PostgreSQL backup archive: ${db_dump}"
+  if [ -n "${files_archive}" ]; then
+    [ -f "${files_archive}" ] || err "Storage archive not found: ${files_archive}"
+    tar -tzf "${files_archive}" >/dev/null || err "Corrupt storage backup archive: ${files_archive}"
+  fi
 
   printf 'WARNING: Restoring will overwrite current database records. Type YES to continue: '
   read -r confirm
@@ -123,7 +132,7 @@ cmd_restore() {
   compose stop app
 
   log "Restoring PostgreSQL from ${db_dump}..."
-  gunzip -c "${db_dump}" | compose exec -T postgres psql -U "${pg_user:-supportdesk_admin}" -d "${pg_db:-supportdesk}"
+  gunzip -c "${db_dump}" | compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "${pg_user:-supportdesk_admin}" -d "${pg_db:-supportdesk}"
 
   if [ -n "${files_archive}" ] && [ -f "${files_archive}" ]; then
     log "Restoring persistent storage from ${files_archive}..."

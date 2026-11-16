@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { extractRequestContext, recordAuditLog } from '@/src/core/audit/audit.ts';
 import { APP_SESSION_COOKIE, createDbSession } from '@/src/core/auth/auth.ts';
+import { buildSessionCookieOptions } from '@/src/core/auth/cookie-options.ts';
 import { runInitialBootstrap } from '@/src/core/bootstrap/superadmin.ts';
 import { logger } from '@/src/core/logging/logger.ts';
 import { checkRateLimit } from '@/src/core/security/rate-limit.ts';
@@ -154,13 +155,11 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    response.cookies.set(APP_SESSION_COOKIE, session.token, {
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production',
-      path: '/',
-      expires: session.expiresAt,
-    });
+    response.cookies.set(
+      APP_SESSION_COOKIE,
+      session.token,
+      buildSessionCookieOptions(req, { expires: session.expiresAt })
+    );
 
     return response;
   } catch (error) {

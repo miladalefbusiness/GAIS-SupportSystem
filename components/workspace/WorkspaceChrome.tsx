@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Activity,
   BarChart3,
@@ -20,7 +20,7 @@ import {
   Users,
 } from 'lucide-react';
 import Link from 'next/link';
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname } from 'next/navigation';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 
@@ -45,7 +45,6 @@ export function WorkspaceChrome({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
-  const router = useRouter();
   const [loggingOut, setLoggingOut] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -59,6 +58,8 @@ export function WorkspaceChrome({
       createdAt: string;
     }>
   >([]);
+
+  const notifContainerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -74,6 +75,29 @@ export function WorkspaceChrome({
       active = false;
     };
   }, [pathname]);
+
+  useEffect(() => {
+    if (!notifOpen) return;
+    function handleOutside(event: MouseEvent) {
+      if (
+        notifContainerRef.current &&
+        !notifContainerRef.current.contains(event.target as Node)
+      ) {
+        setNotifOpen(false);
+      }
+    }
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setNotifOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleOutside);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('mousedown', handleOutside);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [notifOpen]);
 
   async function handleMarkAllRead() {
     const res = await fetch('/api/workspace/notifications', {
@@ -125,8 +149,8 @@ export function WorkspaceChrome({
     try {
       await fetch('/api/auth/logout', { method: 'POST' });
       toast.success('خروج با موفقیت انجام شد.');
-      router.push('/login');
-      router.refresh();
+      window.location.assign('/login');
+      return;
     } catch {
       toast.error('خطا در خروج از سامانه.');
     } finally {
@@ -204,10 +228,11 @@ export function WorkspaceChrome({
             </nav>
           </div>
 
-          <div className="flex items-center gap-3 shrink-0 relative">
+          <div ref={notifContainerRef} className="flex items-center gap-3 shrink-0 relative">
             <button
               type="button"
               aria-label="اعلان‌های تیکت"
+              aria-expanded={notifOpen}
               onClick={() => setNotifOpen((prev) => !prev)}
               className="relative flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white hover:bg-slate-50 cursor-pointer"
             >
@@ -303,7 +328,7 @@ export function WorkspaceChrome({
                 }`}
               >
                 <Sparkles className="h-4 w-4 shrink-0" />
-                <span>نمای کلی هسته</span>
+                <span>داشبورد عملیاتی</span>
               </Link>
 
               {canDesk && (
@@ -507,7 +532,7 @@ export function WorkspaceChrome({
                 حساب کاربری
               </p>
               <Link
-                href="/auth/change-password"
+                href="/change-password"
                 className="w-full flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 transition-colors"
               >
                 <KeyRound className="h-4 w-4 shrink-0" />
@@ -516,14 +541,19 @@ export function WorkspaceChrome({
             </div>
           </div>
 
-          <div className="border-t border-slate-200 pt-4 px-2 text-xs text-slate-500 space-y-1">
+          <div className="border-t border-slate-200 pt-4 px-2 text-xs text-slate-500 space-y-2">
             <div>نسخه سامانه: {version}</div>
-            <div>مرحله: فاز ششم</div>
+            <Link
+              href="/"
+              className="inline-block text-blue-700 hover:underline font-medium"
+            >
+              مشاهده پورتال مشتریان
+            </Link>
           </div>
         </aside>
 
         {/* Main Content Viewport */}
-        <main className="flex-1 p-6 md:p-8 max-w-6xl space-y-6">
+        <main className="flex-1 min-w-0 w-full p-5 sm:p-6 md:p-8 max-w-6xl space-y-6">
           {/* Mobile quick links */}
           <div className="flex lg:hidden items-center gap-2 overflow-x-auto pb-2 border-b border-slate-200 text-xs">
             <Link

@@ -25,3 +25,13 @@
 - `ai:settings:manage`: مشاهده تنظیمات ایمن ارائه‌دهنده (بدون کلید رمزگشایی‌شده)، تغییر ارائه‌دهنده/مدل/کلید، اجرای آزمون اتصال (`POST /api/admin/ai/test-connection`) و تنظیم سیاست‌های دپارتمان‌ها.
 - `ai:reports:view`: مشاهده گزارش‌های مصرف، خطاهای ارائه‌دهنده و ردیابی منابع بازیابی‌شده در `/workspace/admin/ai-reports`.
 
+## مجوزهای میز پشتیبانی و مخزن فایل اشتراکی (فاز ۴ و ۵)
+- `desk:workspace:access`، `desk:tickets:view`، `desk:tickets:view_all`، `desk:tickets:reply`، `desk:tickets:internal_note`، `desk:tickets:assign`، `desk:tickets:transfer`، `desk:tickets:status`
+- `files:workspace:access`، `files:items:view`، `files:items:upload`، `files:items:manage_all`، `files:quotas:manage`
+- هرگونه عملیات مشاهده یا دانلود فایل در مخزن اشتراکی از طریق `canAccessSharedFile()` و `requireDepartmentAccess()` کنترل می‌شود و مجوزهای صریح (`file_permissions`) تنها به فایل‌های غیرمحدودشده یا استثنای ثبت‌شده اعمال می‌گردند.
+
+## مجوزهای مدیریت ارشد، تنظیمات، گزارش‌ها و ممیزی (فاز ۶ و ۷)
+- `admin:settings:manage`: مدیریت تنظیمات عمومی، برندینگ، بنر اطلاعیه و پیش‌فرض‌های سامانه در `/workspace/admin/settings`.
+- `admin:audit:view`: مشاهده، جست‌وجو و دریافت خروجی CSV رویدادهای ممیزی در `/workspace/admin/audit` و `/api/admin/reports/export?kind=audit`.
+- `admin:panel:access` و `admin:storage:manage`: دسترسی به داشبورد گزارش‌های عملیاتی (`/workspace/admin/reports`) و کنسول زنده سلامت سیستم (`/workspace/admin/health`).
+

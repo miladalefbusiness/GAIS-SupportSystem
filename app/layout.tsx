@@ -25,21 +25,21 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'سامانه پشتیبانی هوشمند و مخزن فایل سازمانی',
+  title: 'پورتال پشتیبانی آنلاین و پیگیری درخواست‌ها',
   description:
-    'پلتفرم یکپارچه میز پشتیبانی هوشمند سازمانی، پاسخگویی مبتنی بر مخزن دانش و اشتراک‌گذاری امن فایل',
+    'انتخاب دپارتمان پشتیبانی، گفت‌وگوی آنلاین با دستیار هوشمند و کارشناس، و پیگیری رسمی تیکت‌ها',
   openGraph: {
-    title: 'سامانه پشتیبانی هوشمند و مخزن فایل سازمانی',
+    title: 'پورتال پشتیبانی آنلاین و پیگیری درخواست‌ها',
     description:
-      'پلتفرم یکپارچه میز پشتیبانی هوشمند سازمانی، پاسخگویی مبتنی بر مخزن دانش و اشتراک‌گذاری امن فایل',
+      'انتخاب دپارتمان پشتیبانی، گفت‌وگوی آنلاین با دستیار هوشمند و کارشناس، و پیگیری رسمی تیکت‌ها',
     type: 'website',
     locale: 'fa_IR',
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'سامانه پشتیبانی هوشمند و مخزن فایل سازمانی',
+    title: 'پورتال پشتیبانی آنلاین و پیگیری درخواست‌ها',
     description:
-      'پلتفرم یکپارچه میز پشتیبانی هوشمند سازمانی، پاسخگویی مبتنی بر مخزن دانش و اشتراک‌گذاری امن فایل',
+      'انتخاب دپارتمان پشتیبانی، گفت‌وگوی آنلاین با دستیار هوشمند و کارشناس، و پیگیری رسمی تیکت‌ها',
   },
 };
 
@@ -52,7 +52,7 @@ export default function RootLayout({
     <html
       lang="fa"
       dir="rtl"
-      className={`${vazirmatn.variable} ${plusJakarta.variable} ${jetbrainsMono.variable}`}
+      className={`scroll-smooth ${vazirmatn.variable} ${plusJakarta.variable} ${jetbrainsMono.variable}`}
     >
       <body
         suppressHydrationWarning

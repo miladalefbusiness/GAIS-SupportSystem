@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { extractRequestContext, recordAuditLog } from '@/src/core/audit/audit.ts';
 import { requireAuth } from '@/src/core/auth/guards.ts';
 import { logger } from '@/src/core/logging/logger.ts';
+import { checkRateLimit } from '@/src/core/security/rate-limit.ts';
 import { db } from '@/src/db/index.ts';
 import { authAccounts, authSessions, users } from '@/src/db/schema.ts';
 
@@ -29,6 +30,26 @@ export async function POST(req: NextRequest) {
 
   const { session } = authResult;
   const { ipAddress, userAgent } = extractRequestContext(req.headers);
+
+  const rate = checkRateLimit(
+    `pw-change:${session.user.id}:${ipAddress || 'local'}`,
+    10,
+    15 * 60_000
+  );
+  if (!rate.allowed) {
+    await recordAuditLog({
+      actorUserId: session.user.id,
+      action: 'auth.password_change.rate_limited',
+      targetType: 'user',
+      targetId: session.user.id,
+      ipAddress,
+      userAgent,
+    });
+    return NextResponse.json(
+      { error: 'تعداد درخواست‌های تغییر رمز بیش از حد مجاز است. لطفاً کمی صبر کنید.' },
+      { status: 429, headers: { 'Retry-After': String(rate.retryAfterSeconds) } }
+    );
+  }
 
   try {
     const body = await req.json();

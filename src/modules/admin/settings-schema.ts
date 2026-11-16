@@ -50,12 +50,12 @@ export const platformSettingsSchema = z.object({
 export type PlatformSettingsDto = z.infer<typeof platformSettingsSchema>;
 
 export const DEFAULT_PLATFORM_SETTINGS: PlatformSettingsDto = {
-  siteTitleFa: 'سامانه پشتیبانی هوشمند و مخزن فایل سازمانی',
-  brandNameFa: 'پشتیبانی سازمانی',
-  heroTitleFa: 'سامانه یکپارچه پشتیبانی هوشمند و مخزن فایل سازمانی',
+  siteTitleFa: 'پورتال پشتیبانی آنلاین و پیگیری درخواست‌ها',
+  brandNameFa: 'مرکز پشتیبانی',
+  heroTitleFa: 'پشتیبانی تخصصی دپارتمان‌ها و گفت‌وگوی آنلاین',
   heroDescriptionFa:
-    'برای دریافت راهنمایی رسمی از دستیار هوشمند یا ثبت تیکت پشتیبانی با احراز هویت سریع کد ملی، دپارتمان مورد نظر خود را انتخاب کنید.',
-  supportContactText: 'پاسخگویی همه‌روزه از طریق دپارتمان‌های پشتیبانی',
+    'دپارتمان مرتبط با درخواست خود را انتخاب کنید تا بلافاصله گفت‌وگو با دستیار هوشمند یا کارشناس پشتیبانی را آغاز کنید و در صورت نیاز تیکت رسمی ثبت نمایید.',
+  supportContactText: 'پاسخگویی سریع آنلاین همه‌روزه از طریق دپارتمان‌های تخصصی',
   maintenanceNoticeFa: '',
   defaultTicketPriority: 'normal',
   customerOtpTtlMinutes: 5,

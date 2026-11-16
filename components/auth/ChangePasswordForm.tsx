@@ -1,11 +1,17 @@
 'use client';
 
 import { useState } from 'react';
-import { Loader2, ShieldAlert, ShieldCheck } from 'lucide-react';
+import { Eye, EyeOff, Loader2, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 
@@ -19,6 +25,9 @@ export function ChangePasswordForm({ username, forced }: ChangePasswordFormProps
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [showCurrent, setShowCurrent] = useState(false);
+  const [showNew, setShowNew] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -46,8 +55,8 @@ export function ChangePasswordForm({ username, forced }: ChangePasswordFormProps
       }
 
       toast.success('رمز عبور با موفقیت تغییر یافت.');
-      router.push('/workspace');
-      router.refresh();
+      window.location.assign('/workspace');
+      return;
     } catch {
       setErrorMessage('خطا در برقراری ارتباط با سرور.');
     } finally {
@@ -64,8 +73,8 @@ export function ChangePasswordForm({ username, forced }: ChangePasswordFormProps
             <div className="space-y-1 text-sm">
               <p className="font-semibold">تغییر رمز عبور اولیه الزامی است</p>
               <p className="text-amber-800 leading-relaxed">
-                برای حفظ امنیت حساب مدیر ارشد ({username})، پیش از دسترسی به پنل
-                باید رمز عبور اولیه را به یک رمز جدید و قوی تغییر دهید.
+                برای حفظ امنیت حساب ({username})، پیش از دسترسی به پنل کاربری باید
+                رمز عبور اولیه را به یک رمز جدید و قوی تغییر دهید.
               </p>
             </div>
           </div>
@@ -91,40 +100,85 @@ export function ChangePasswordForm({ username, forced }: ChangePasswordFormProps
             <form onSubmit={handleSubmit} className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="currentPassword">رمز عبور فعلی</Label>
-                <Input
-                  id="currentPassword"
-                  type="password"
-                  dir="ltr"
-                  required
-                  value={currentPassword}
-                  onChange={(e) => setCurrentPassword(e.target.value)}
-                />
+                <div className="relative">
+                  <Input
+                    id="currentPassword"
+                    type={showCurrent ? 'text' : 'password'}
+                    dir="ltr"
+                    required
+                    value={currentPassword}
+                    onChange={(e) => setCurrentPassword(e.target.value)}
+                    className="pl-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowCurrent((prev) => !prev)}
+                    aria-label={showCurrent ? 'مخفی کردن رمز' : 'نمایش رمز'}
+                    className="absolute left-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-700 cursor-pointer"
+                  >
+                    {showCurrent ? (
+                      <EyeOff className="h-4 w-4" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
               </div>
 
               <div className="space-y-2">
                 <Label htmlFor="newPassword">رمز عبور جدید</Label>
-                <Input
-                  id="newPassword"
-                  type="password"
-                  dir="ltr"
-                  required
-                  minLength={10}
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                />
+                <div className="relative">
+                  <Input
+                    id="newPassword"
+                    type={showNew ? 'text' : 'password'}
+                    dir="ltr"
+                    required
+                    minLength={10}
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    className="pl-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowNew((prev) => !prev)}
+                    aria-label={showNew ? 'مخفی کردن رمز' : 'نمایش رمز'}
+                    className="absolute left-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-700 cursor-pointer"
+                  >
+                    {showNew ? (
+                      <EyeOff className="h-4 w-4" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
               </div>
 
               <div className="space-y-2">
                 <Label htmlFor="confirmPassword">تکرار رمز عبور جدید</Label>
-                <Input
-                  id="confirmPassword"
-                  type="password"
-                  dir="ltr"
-                  required
-                  minLength={10}
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                />
+                <div className="relative">
+                  <Input
+                    id="confirmPassword"
+                    type={showConfirm ? 'text' : 'password'}
+                    dir="ltr"
+                    required
+                    minLength={10}
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    className="pl-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirm((prev) => !prev)}
+                    aria-label={showConfirm ? 'مخفی کردن رمز' : 'نمایش رمز'}
+                    className="absolute left-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-700 cursor-pointer"
+                  >
+                    {showConfirm ? (
+                      <EyeOff className="h-4 w-4" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
               </div>
 
               <div className="flex items-center gap-3 pt-2">
