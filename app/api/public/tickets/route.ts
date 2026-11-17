@@ -2,7 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { extractRequestContext } from '@/src/core/audit/audit.ts';
 import { logger } from '@/src/core/logging/logger.ts';
 import { getPlatformSettings } from '@/src/modules/admin/settings.ts';
-import { getAuthenticatedCustomerSession } from '@/src/modules/customers/service.ts';
+import {
+  getAuthenticatedCustomerSession,
+  resolveOrCreateCustomerByIdentity,
+} from '@/src/modules/customers/service.ts';
 import { mapTicketDomainError } from '@/src/modules/tickets/error-http.ts';
 import {
   convertAiConversationSchema,
@@ -21,7 +24,7 @@ export async function GET() {
   const session = await getAuthenticatedCustomerSession();
   if (!session) {
     return NextResponse.json(
-      { error: 'برای مشاهده تیکت‌ها ابتدا کد ملی و هویت خود را تأیید کنید.' },
+      { error: 'برای مشاهده تیکت‌ها ابتدا با کد ملی و رمز عبور وارد شوید.' },
       { status: 401 }
     );
   }
@@ -32,13 +35,6 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   const session = await getAuthenticatedCustomerSession();
-  if (!session) {
-    return NextResponse.json(
-      { error: 'برای ثبت تیکت ابتدا باید احراز هویت مشتری را تکمیل کنید.' },
-      { status: 401 }
-    );
-  }
-
   const { ipAddress, userAgent } = extractRequestContext(req.headers);
 
   try {
@@ -47,6 +43,8 @@ export async function POST(req: NextRequest) {
 
     if (contentType.includes('multipart/form-data')) {
       const formData = await req.formData();
+      const rawNationalId = formData.get('nationalId');
+      const rawFullName = formData.get('fullName');
       const rawPayload = {
         departmentId: String(formData.get('departmentId') ?? ''),
         subject: String(formData.get('subject') ?? ''),
@@ -54,6 +52,14 @@ export async function POST(req: NextRequest) {
         priority: formData.get('priority')
           ? String(formData.get('priority'))
           : platformSettings.defaultTicketPriority,
+        nationalId:
+          typeof rawNationalId === 'string' && rawNationalId.trim()
+            ? rawNationalId.trim()
+            : undefined,
+        fullName:
+          typeof rawFullName === 'string' && rawFullName.trim()
+            ? rawFullName.trim()
+            : undefined,
       };
 
       const parsed = createCustomerTicketSchema.safeParse(rawPayload);
@@ -62,6 +68,26 @@ export async function POST(req: NextRequest) {
           { error: parsed.error.issues[0]?.message || 'اطلاعات تیکت نامعتبر است.' },
           { status: 400 }
         );
+      }
+
+      let customerId = session?.customer.id ?? null;
+      let customerName = session?.customer.fullName ?? null;
+      if (!customerId) {
+        if (!parsed.data.nationalId || !parsed.data.fullName) {
+          return NextResponse.json(
+            {
+              error:
+                'برای ثبت تیکت، وارد کردن کد ملی و نام و نام خانوادگی الزامی است.',
+            },
+            { status: 400 }
+          );
+        }
+        const resolved = await resolveOrCreateCustomerByIdentity({
+          nationalId: parsed.data.nationalId,
+          fullName: parsed.data.fullName,
+        });
+        customerId = resolved.id;
+        customerName = resolved.fullName;
       }
 
       const files: UploadedFileInput[] = [];
@@ -73,8 +99,8 @@ export async function POST(req: NextRequest) {
       }
 
       const ticket = await createCustomerTicket({
-        customerId: session.customer.id,
-        customerName: session.customer.fullName,
+        customerId,
+        customerName: customerName!,
         departmentId: parsed.data.departmentId,
         subject: parsed.data.subject,
         description: parsed.data.description,
@@ -84,7 +110,24 @@ export async function POST(req: NextRequest) {
         userAgent,
       });
 
-      return NextResponse.json({ ticket }, { status: 201 });
+      return NextResponse.json(
+        {
+          ticket: session
+            ? ticket
+            : ticket
+            ? {
+                id: ticket.id,
+                referenceCode: ticket.referenceCode,
+                subject: ticket.subject,
+                departmentNameFa: ticket.departmentNameFa,
+                status: ticket.status,
+                createdAt: ticket.createdAt,
+              }
+            : null,
+          requiresPortalLoginForTracking: !session,
+        },
+        { status: 201 }
+      );
     }
 
     const body = await req.json();
@@ -99,6 +142,13 @@ export async function POST(req: NextRequest) {
       'aiConversationId' in bodyWithDefaultPriority &&
       bodyWithDefaultPriority.aiConversationId
     ) {
+      if (!session) {
+        return NextResponse.json(
+          { error: 'برای مشاهده تیکت یا تکمیل ارجاع ابتدا با کد ملی و رمز عبور وارد شوید.' },
+          { status: 401 }
+        );
+      }
+
       const parsedHandoff = convertAiConversationSchema.safeParse(bodyWithDefaultPriority);
       if (!parsedHandoff.success) {
         return NextResponse.json(
@@ -129,9 +179,29 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    let customerId = session?.customer.id ?? null;
+    let customerName = session?.customer.fullName ?? null;
+    if (!customerId) {
+      if (!parsed.data.nationalId || !parsed.data.fullName) {
+        return NextResponse.json(
+          {
+            error:
+              'برای ثبت تیکت، وارد کردن کد ملی و نام و نام خانوادگی الزامی است.',
+          },
+          { status: 400 }
+        );
+      }
+      const resolved = await resolveOrCreateCustomerByIdentity({
+        nationalId: parsed.data.nationalId,
+        fullName: parsed.data.fullName,
+      });
+      customerId = resolved.id;
+      customerName = resolved.fullName;
+    }
+
     const ticket = await createCustomerTicket({
-      customerId: session.customer.id,
-      customerName: session.customer.fullName,
+      customerId,
+      customerName: customerName!,
       departmentId: parsed.data.departmentId,
       subject: parsed.data.subject,
       description: parsed.data.description,
@@ -140,11 +210,33 @@ export async function POST(req: NextRequest) {
       userAgent,
     });
 
-    return NextResponse.json({ ticket }, { status: 201 });
+    return NextResponse.json(
+      {
+        ticket: session
+          ? ticket
+          : ticket
+          ? {
+              id: ticket.id,
+              referenceCode: ticket.referenceCode,
+              subject: ticket.subject,
+              departmentNameFa: ticket.departmentNameFa,
+              status: ticket.status,
+              createdAt: ticket.createdAt,
+            }
+          : null,
+        requiresPortalLoginForTracking: !session,
+      },
+      { status: 201 }
+    );
   } catch (error) {
-    logger.warn('public.tickets.create_failed', {
-      error: error instanceof Error ? error.message : 'unknown',
-    });
+    const message = error instanceof Error ? error.message : '';
+    if (message.startsWith('INVALID_NATIONAL_ID:')) {
+      return NextResponse.json(
+        { error: message.slice('INVALID_NATIONAL_ID:'.length) },
+        { status: 400 }
+      );
+    }
+    logger.warn('public.tickets.create_failed', { error: message || 'unknown' });
     return mapTicketDomainError(error, 'خطا در ثبت تیکت پشتیبانی.');
   }
 }

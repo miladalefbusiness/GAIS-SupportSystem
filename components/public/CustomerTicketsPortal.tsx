@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   Bot,
+  CheckCircle2,
   Download,
   Headset,
   Loader2,
@@ -21,7 +22,6 @@ import { Button } from '@/components/ui/button';
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
@@ -38,6 +38,7 @@ import {
   TICKET_STATUS_LABEL_FA,
 } from '@/src/modules/tickets/schemas';
 import type { VerifiedCustomerDto } from './CustomerAuthDialog';
+import type { GuestIdentityDraft } from './DepartmentChatDialog';
 
 function formatDateFa(iso: string): string {
   try {
@@ -55,6 +56,8 @@ export function CustomerTicketsPortal({
   customer,
   tickets,
   selectedTicketId,
+  guestIdentity,
+  onGuestIdentityChange,
   onSelectTicket,
   onRefreshSession,
   onOpenAuth,
@@ -64,6 +67,8 @@ export function CustomerTicketsPortal({
   customer: VerifiedCustomerDto | null;
   tickets: CustomerTicketSummaryDto[];
   selectedTicketId: string | null;
+  guestIdentity?: GuestIdentityDraft;
+  onGuestIdentityChange?: (next: GuestIdentityDraft) => void;
   onSelectTicket: (ticketId: string | null) => void;
   onRefreshSession: () => Promise<void>;
   onOpenAuth: () => void;
@@ -76,6 +81,33 @@ export function CustomerTicketsPortal({
   const [description, setDescription] = useState('');
   const [newFiles, setNewFiles] = useState<File[]>([]);
   const [creating, setCreating] = useState(false);
+  const [guestSubmittedRef, setGuestSubmittedRef] = useState<{
+    referenceCode: string;
+    subject: string;
+    departmentNameFa: string;
+  } | null>(null);
+
+  const [localNid, setLocalNid] = useState(guestIdentity?.nationalId ?? '');
+  const [localName, setLocalName] = useState(guestIdentity?.fullName ?? '');
+
+  const guestNationalId = guestIdentity ? guestIdentity.nationalId : localNid;
+  const guestFullName = guestIdentity ? guestIdentity.fullName : localName;
+
+  function setGuestNationalId(val: string) {
+    if (onGuestIdentityChange) {
+      onGuestIdentityChange({ nationalId: val, fullName: guestFullName });
+    } else {
+      setLocalNid(val);
+    }
+  }
+
+  function setGuestFullName(val: string) {
+    if (onGuestIdentityChange) {
+      onGuestIdentityChange({ nationalId: guestNationalId, fullName: val });
+    } else {
+      setLocalName(val);
+    }
+  }
 
   const [ticketQuery, setTicketQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -141,6 +173,13 @@ export function CustomerTicketsPortal({
       return;
     }
 
+    if (!customer) {
+      if (guestNationalId.trim().length < 10 || guestFullName.trim().length < 2) {
+        toast.error('لطفاً کد ملی (۱۰ رقم) و نام و نام خانوادگی خود را وارد کنید.');
+        return;
+      }
+    }
+
     setCreating(true);
     try {
       const fd = new FormData();
@@ -148,6 +187,10 @@ export function CustomerTicketsPortal({
       fd.set('subject', subject);
       fd.set('priority', priority);
       fd.set('description', description);
+      if (!customer) {
+        fd.set('nationalId', guestNationalId.trim());
+        fd.set('fullName', guestFullName.trim());
+      }
       for (const file of newFiles) {
         fd.append('files', file);
       }
@@ -167,10 +210,19 @@ export function CustomerTicketsPortal({
       setDescription('');
       setNewFiles([]);
       setShowNewForm(false);
-      await onRefreshSession();
-      onSelectTicket(data.ticket.id);
-      setDetail(data.ticket);
-      setLoadedTicketId(data.ticket.id);
+
+      if (customer) {
+        await onRefreshSession();
+        onSelectTicket(data.ticket.id);
+        setDetail(data.ticket);
+        setLoadedTicketId(data.ticket.id);
+      } else {
+        setGuestSubmittedRef({
+          referenceCode: data.ticket.referenceCode,
+          subject: data.ticket.subject,
+          departmentNameFa: data.ticket.departmentNameFa,
+        });
+      }
     } catch {
       toast.error('خطای ارتباط با سرور.');
     } finally {
@@ -213,6 +265,154 @@ export function CustomerTicketsPortal({
     }
   }
 
+  const newTicketForm = (
+    <form
+      onSubmit={handleCreateTicket}
+      className="rounded-xl border border-blue-200 bg-blue-50/30 p-5 space-y-4"
+    >
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+        <h3 className="text-sm font-bold text-slate-900">
+          ایجاد تیکت پشتیبانی جدید
+        </h3>
+        <span className="text-xs text-slate-500">
+          ثبت مستقیم در پرونده کد ملی شما و ارجاع به کارشناس دپارتمان
+        </span>
+      </div>
+
+      {!customer && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 rounded-lg border border-slate-200 bg-white p-3.5">
+          <div className="space-y-1.5">
+            <Label htmlFor="guest-tkt-nid">کد ملی (۱۰ رقم)</Label>
+            <Input
+              id="guest-tkt-nid"
+              dir="ltr"
+              inputMode="numeric"
+              placeholder="0012345679"
+              value={guestNationalId}
+              onChange={(e) => setGuestNationalId(e.target.value)}
+              required
+              className="font-[family-name:var(--font-mono)] text-right"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="guest-tkt-name">نام و نام خانوادگی</Label>
+            <Input
+              id="guest-tkt-name"
+              placeholder="مثال: سارا محمدی"
+              value={guestFullName}
+              onChange={(e) => setGuestFullName(e.target.value)}
+              required
+            />
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="space-y-1.5">
+          <Label htmlFor="tkt-dept">دپارتمان</Label>
+          <select
+            id="tkt-dept"
+            value={departmentId || departments[0]?.id || ''}
+            onChange={(e) => setDepartmentId(e.target.value)}
+            className="w-full h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
+          >
+            {departments.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.nameFa}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="space-y-1.5">
+          <Label htmlFor="tkt-priority">اولویت</Label>
+          <select
+            id="tkt-priority"
+            value={priority}
+            onChange={(e) =>
+              setPriority(e.target.value as 'low' | 'normal' | 'high' | 'urgent')
+            }
+            className="w-full h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
+          >
+            <option value="low">کم</option>
+            <option value="normal">عادی</option>
+            <option value="high">بالا</option>
+            <option value="urgent">فوری</option>
+          </select>
+        </div>
+
+        <div className="space-y-1.5">
+          <Label htmlFor="tkt-subject">عنوان درخواست</Label>
+          <Input
+            id="tkt-subject"
+            placeholder="خلاصه موضوع تیکت"
+            value={subject}
+            onChange={(e) => setSubject(e.target.value)}
+            required
+          />
+        </div>
+      </div>
+
+      <div className="space-y-1.5">
+        <Label htmlFor="tkt-desc">شرح کامل درخواست</Label>
+        <textarea
+          id="tkt-desc"
+          rows={3}
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="جزئیات درخواست یا مشکل خود را بنویسید..."
+          required
+          className="w-full rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600"
+        />
+      </div>
+
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <label className="inline-flex items-center gap-2 text-xs text-slate-700 cursor-pointer hover:text-slate-900">
+          <Paperclip className="h-4 w-4 text-slate-500" />
+          <span>افزودن فایل پیوست (PNG، JPEG، WebP، PDF، DOCX، TXT، MD)</span>
+          <input
+            type="file"
+            multiple
+            accept=".png,.jpg,.jpeg,.webp,.pdf,.docx,.txt,.md"
+            onChange={(e) => setNewFiles(Array.from(e.target.files ?? []))}
+            className="hidden"
+          />
+        </label>
+
+        <Button type="submit" disabled={creating || departments.length === 0}>
+          {creating && <Loader2 className="h-4 w-4 animate-spin" />}
+          <span>ثبت نهایی تیکت</span>
+        </Button>
+      </div>
+
+      {newFiles.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {newFiles.map((f, idx) => (
+            <span
+              key={`${f.name}-${idx}`}
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-700"
+            >
+              <span className="truncate max-w-44">{f.name}</span>
+              <span className="text-[11px] text-slate-400 tabular-nums">
+                ({formatBytesFa(f.size)})
+              </span>
+              <button
+                type="button"
+                onClick={() =>
+                  setNewFiles((prev) => prev.filter((_, i) => i !== idx))
+                }
+                aria-label="حذف پیوست"
+                className="text-slate-400 hover:text-red-600 cursor-pointer"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+    </form>
+  );
+
   return (
     <section id="customer-portal" className="mx-auto max-w-6xl px-6 pb-14">
       <Card className="bg-white border-slate-200">
@@ -225,11 +425,6 @@ export function CustomerTicketsPortal({
                   پورتال ثبت و پیگیری تیکت‌های من
                 </CardTitle>
               </div>
-              <CardDescription>
-                {customer
-                  ? `خوش آمدید ${customer.fullName} · می‌توانید تیکت جدید ثبت کنید یا گفت‌وگوهای قبلی خود را ادامه دهید.`
-                  : 'با تأیید کد ملی و کد یک‌بارمصرف، سوابق تیکت‌های خود را مشاهده یا درخواست جدید ثبت کنید.'}
-              </CardDescription>
             </div>
 
             {customer ? (
@@ -248,139 +443,59 @@ export function CustomerTicketsPortal({
                 </Button>
               </div>
             ) : (
-              <Button type="button" onClick={onOpenAuth}>
-                <ShieldCheck className="h-4 w-4" />
-                <span>تأیید هویت و مشاهده تیکت‌ها</span>
-              </Button>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setShowNewForm((prev) => !prev)}
+                >
+                  <Plus className="h-4 w-4" />
+                  <span>{showNewForm ? 'بستن فرم تیکت' : 'ثبت تیکت جدید'}</span>
+                </Button>
+                <Button type="button" onClick={onOpenAuth}>
+                  <ShieldCheck className="h-4 w-4" />
+                  <span>تأیید هویت و مشاهده تیکت‌ها</span>
+                </Button>
+              </div>
             )}
           </div>
         </CardHeader>
 
+        {!customer && (showNewForm || guestSubmittedRef) && (
+          <CardContent className="p-6 space-y-4">
+            {guestSubmittedRef && (
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-start gap-2.5 text-xs text-emerald-950 leading-relaxed">
+                  <CheckCircle2 className="h-4 w-4 text-emerald-700 mt-0.5 shrink-0" />
+                  <div>
+                    <p className="font-semibold">
+                      تیکت «{guestSubmittedRef.subject}» با کد{' '}
+                      <span
+                        dir="ltr"
+                        className="font-[family-name:var(--font-mono)] font-bold"
+                      >
+                        {guestSubmittedRef.referenceCode}
+                      </span>{' '}
+                      در دپارتمان {guestSubmittedRef.departmentNameFa} ثبت شد.
+                    </p>
+                    <p className="text-emerald-800 mt-0.5">
+                      کارشناسان سوابق پیام‌های شما را با کد ملی مشاهده می‌کنند. برای دیدن پاسخ‌ها و پیگیری تیکت، با کد ملی و رمز عبور وارد شوید.
+                    </p>
+                  </div>
+                </div>
+                <Button type="button" size="sm" onClick={onOpenAuth}>
+                  <ShieldCheck className="h-4 w-4" />
+                  <span>پیگیری تیکت من</span>
+                </Button>
+              </div>
+            )}
+            {showNewForm && newTicketForm}
+          </CardContent>
+        )}
+
         {customer && (
           <CardContent className="p-6 space-y-6">
-            {showNewForm && (
-              <form
-                onSubmit={handleCreateTicket}
-                className="rounded-xl border border-blue-200 bg-blue-50/30 p-5 space-y-4"
-              >
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <h3 className="text-sm font-bold text-slate-900">
-                    ایجاد تیکت پشتیبانی جدید
-                  </h3>
-                  <span className="text-xs text-slate-500">
-                    ارجاع خودکار به کارشناس متخصص دپارتمان
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="space-y-1.5">
-                    <Label htmlFor="tkt-dept">دپارتمان</Label>
-                    <select
-                      id="tkt-dept"
-                      value={departmentId || departments[0]?.id || ''}
-                      onChange={(e) => setDepartmentId(e.target.value)}
-                      className="w-full h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
-                    >
-                      {departments.map((d) => (
-                        <option key={d.id} value={d.id}>
-                          {d.nameFa}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <Label htmlFor="tkt-priority">اولویت</Label>
-                    <select
-                      id="tkt-priority"
-                      value={priority}
-                      onChange={(e) =>
-                        setPriority(
-                          e.target.value as 'low' | 'normal' | 'high' | 'urgent'
-                        )
-                      }
-                      className="w-full h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
-                    >
-                      <option value="low">کم</option>
-                      <option value="normal">عادی</option>
-                      <option value="high">بالا</option>
-                      <option value="urgent">فوری</option>
-                    </select>
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <Label htmlFor="tkt-subject">عنوان درخواست</Label>
-                    <Input
-                      id="tkt-subject"
-                      placeholder="خلاصه موضوع تیکت"
-                      value={subject}
-                      onChange={(e) => setSubject(e.target.value)}
-                      required
-                    />
-                  </div>
-                </div>
-
-                <div className="space-y-1.5">
-                  <Label htmlFor="tkt-desc">شرح کامل درخواست</Label>
-                  <textarea
-                    id="tkt-desc"
-                    rows={3}
-                    value={description}
-                    onChange={(e) => setDescription(e.target.value)}
-                    placeholder="جزئیات درخواست یا مشکل خود را بنویسید..."
-                    required
-                    className="w-full rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600"
-                  />
-                </div>
-
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <label className="inline-flex items-center gap-2 text-xs text-slate-700 cursor-pointer hover:text-slate-900">
-                    <Paperclip className="h-4 w-4 text-slate-500" />
-                    <span>افزودن فایل پیوست (PNG، JPEG، WebP، PDF، DOCX، TXT، MD)</span>
-                    <input
-                      type="file"
-                      multiple
-                      accept=".png,.jpg,.jpeg,.webp,.pdf,.docx,.txt,.md"
-                      onChange={(e) =>
-                        setNewFiles(Array.from(e.target.files ?? []))
-                      }
-                      className="hidden"
-                    />
-                  </label>
-
-                  <Button type="submit" disabled={creating || departments.length === 0}>
-                    {creating && <Loader2 className="h-4 w-4 animate-spin" />}
-                    <span>ثبت نهایی تیکت</span>
-                  </Button>
-                </div>
-
-                {newFiles.length > 0 && (
-                  <div className="flex flex-wrap gap-2">
-                    {newFiles.map((f, idx) => (
-                      <span
-                        key={`${f.name}-${idx}`}
-                        className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-700"
-                      >
-                        <span className="truncate max-w-44">{f.name}</span>
-                        <span className="text-[11px] text-slate-400 tabular-nums">
-                          ({formatBytesFa(f.size)})
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setNewFiles((prev) => prev.filter((_, i) => i !== idx))
-                          }
-                          aria-label="حذف پیوست"
-                          className="text-slate-400 hover:text-red-600 cursor-pointer"
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </button>
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </form>
-            )}
+            {showNewForm && newTicketForm}
 
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
               {/* Ticket History List */}

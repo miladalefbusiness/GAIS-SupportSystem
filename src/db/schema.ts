@@ -671,6 +671,9 @@ export const aiConversations = pgTable(
     departmentId: text('department_id')
       .notNull()
       .references(() => departments.id, { onDelete: 'cascade' }),
+    customerProfileId: text('customer_profile_id').references(() => customerProfiles.id, {
+      onDelete: 'set null',
+    }),
     mode: text('mode').notNull().default('ai_assisted'), // ai_assisted | waiting_for_operator | assigned_to_operator | human_operator_active | resolved
     escalatedToHuman: boolean('escalated_to_human').notNull().default(false),
     handoffRequestedAt: timestamp('handoff_requested_at', { withTimezone: true }),
@@ -682,6 +685,7 @@ export const aiConversations = pgTable(
   },
   (table) => [
     index('ai_conversations_dept_idx').on(table.departmentId),
+    index('ai_conversations_customer_idx').on(table.customerProfileId),
     index('ai_conversations_mode_idx').on(table.mode),
   ]
 );
@@ -839,6 +843,8 @@ export const customerProfiles = pgTable(
     fullName: text('full_name').notNull(),
     encryptedPhone: text('encrypted_phone'),
     phoneMasked: text('phone_masked'),
+    passwordHash: text('password_hash'),
+    passwordUpdatedAt: timestamp('password_updated_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
@@ -908,7 +914,7 @@ export const tickets = pgTable(
     referenceCode: text('reference_code').notNull(),
     customerProfileId: text('customer_profile_id')
       .notNull()
-      .references(() => customerProfiles.id, { onDelete: 'restrict' }),
+      .references(() => customerProfiles.id, { onDelete: 'cascade' }),
     departmentId: text('department_id')
       .notNull()
       .references(() => departments.id, { onDelete: 'restrict' }),
@@ -1225,6 +1231,10 @@ export const aiConversationsRelations = relations(aiConversations, ({ one, many 
     fields: [aiConversations.departmentId],
     references: [departments.id],
   }),
+  customer: one(customerProfiles, {
+    fields: [aiConversations.customerProfileId],
+    references: [customerProfiles.id],
+  }),
   messages: many(aiMessages),
   retrievalRecords: many(knowledgeRetrievalRecords),
 }));
@@ -1239,6 +1249,7 @@ export const aiMessagesRelations = relations(aiMessages, ({ one }) => ({
 export const customerProfilesRelations = relations(customerProfiles, ({ many }) => ({
   sessions: many(customerSessions),
   tickets: many(tickets),
+  aiConversations: many(aiConversations),
 }));
 
 export const customerSessionsRelations = relations(customerSessions, ({ one }) => ({

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   Bot,
   Headset,
+  IdCard,
   Loader2,
   Maximize2,
   MessageSquarePlus,
@@ -24,9 +25,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { toPersianDigits } from '@/src/lib/jalali';
 import type { ThemeAccentPreset } from '@/src/modules/admin/settings-schema';
 import type { PublicDepartmentCard } from '@/src/modules/departments/service';
+import type { VerifiedCustomerDto } from './CustomerAuthDialog';
 
 export interface ChatCitationItem {
   refCode: string;
@@ -49,6 +53,11 @@ export interface ChatMessageItem {
   responseOutcome?: string | null;
   citations?: ChatCitationItem[];
   createdAt: string;
+}
+
+export interface GuestIdentityDraft {
+  nationalId: string;
+  fullName: string;
 }
 
 const ACCENT_CHAT_BG: Record<ThemeAccentPreset, string> = {
@@ -84,7 +93,7 @@ function buildWelcomeMessage(department: PublicDepartmentCard): ChatMessageItem 
     senderRole: 'system',
     content:
       department.welcomeMessageFa ||
-      `به واحد پشتیبانی «${department.nameFa}» خوش آمدید. پرسش خود را بنویسید تا راهنمایی شوید یا درخواست ارتباط مستقیم با اپراتور را ثبت کنید.`,
+      `به واحد پشتیبانی «${department.nameFa}» خوش آمدید. کد ملی و نام و نام خانوادگی خود را وارد کرده و پرسش یا درخواست خود را بنویسید.`,
     createdAt: new Date().toISOString(),
   };
 }
@@ -125,15 +134,21 @@ export function DepartmentConversationPanel({
   department,
   themeAccent = 'blue',
   variant = 'inline',
+  authenticatedCustomer = null,
+  guestIdentity,
+  onGuestIdentityChange,
   onExpandModal,
-  onRequestCustomerAuthForHandoff,
+  onOpenPortalTracking,
   onOpenConvertedTicket,
 }: {
   department: PublicDepartmentCard;
   themeAccent?: ThemeAccentPreset;
   variant?: 'inline' | 'dialog';
+  authenticatedCustomer?: VerifiedCustomerDto | null;
+  guestIdentity?: GuestIdentityDraft;
+  onGuestIdentityChange?: (next: GuestIdentityDraft) => void;
   onExpandModal?: () => void;
-  onRequestCustomerAuthForHandoff?: (conversationId: string) => void;
+  onOpenPortalTracking?: () => void;
   onOpenConvertedTicket?: (ticketId: string) => void;
 }) {
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -142,9 +157,6 @@ export function DepartmentConversationPanel({
     id: string;
     referenceCode: string;
   } | null>(null);
-  const [needsVerificationConvId, setNeedsVerificationConvId] = useState<
-    string | null
-  >(null);
   const [mode, setMode] = useState<'ai_assisted' | 'waiting_for_operator'>(() =>
     department.aiEnabled ? 'ai_assisted' : 'waiting_for_operator'
   );
@@ -152,12 +164,38 @@ export function DepartmentConversationPanel({
   const [messages, setMessages] = useState<ChatMessageItem[]>(() => [
     buildWelcomeMessage(department),
   ]);
+  const [localNationalId, setLocalNationalId] = useState(
+    guestIdentity?.nationalId ?? ''
+  );
+  const [localFullName, setLocalFullName] = useState(
+    guestIdentity?.fullName ?? ''
+  );
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [escalating, setEscalating] = useState(false);
 
+  const nationalId = guestIdentity ? guestIdentity.nationalId : localNationalId;
+  const fullName = guestIdentity ? guestIdentity.fullName : localFullName;
+
+  function updateNationalId(val: string) {
+    if (onGuestIdentityChange) {
+      onGuestIdentityChange({ nationalId: val, fullName });
+    } else {
+      setLocalNationalId(val);
+    }
+  }
+
+  function updateFullName(val: string) {
+    if (onGuestIdentityChange) {
+      onGuestIdentityChange({ nationalId, fullName: val });
+    } else {
+      setLocalFullName(val);
+    }
+  }
+
   const listEndRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const nidInputRef = useRef<HTMLInputElement | null>(null);
 
   const bubbleBgClass = ACCENT_CHAT_BG[themeAccent] || ACCENT_CHAT_BG.blue;
   const iconColorClass = ACCENT_ICON_COLOR[themeAccent] || ACCENT_ICON_COLOR.blue;
@@ -243,7 +281,6 @@ export function DepartmentConversationPanel({
     persistConversationId(null);
     setConversationId(null);
     setConvertedTicketRef(null);
-    setNeedsVerificationConvId(null);
     setMode(department.aiEnabled ? 'ai_assisted' : 'waiting_for_operator');
     setEscalatedToHuman(false);
     setInput('');
@@ -251,8 +288,24 @@ export function DepartmentConversationPanel({
     composerRef.current?.focus();
   }
 
+  function validateIdentityBeforeStart(): boolean {
+    if (authenticatedCustomer || conversationId) return true;
+    const cleanNid = nationalId.trim();
+    const cleanName = fullName.trim();
+    if (cleanNid.length < 10 || cleanName.length < 2) {
+      toast.error(
+        'لطفاً پیش از ارسال پیام، کد ملی (۱۰ رقم) و نام و نام خانوادگی خود را وارد کنید.'
+      );
+      nidInputRef.current?.focus();
+      return false;
+    }
+    return true;
+  }
+
   async function sendText(rawText: string) {
     if (sending) return;
+    if (!validateIdentityBeforeStart()) return;
+
     const text = rawText.trim();
     if (text.length < 2) {
       toast.error('لطفاً متن پیام خود را بنویسید.');
@@ -269,6 +322,8 @@ export function DepartmentConversationPanel({
         body: JSON.stringify({
           departmentId: department.id,
           conversationId: conversationId || undefined,
+          nationalId: !authenticatedCustomer ? nationalId.trim() || undefined : undefined,
+          fullName: !authenticatedCustomer ? fullName.trim() || undefined : undefined,
           message: text,
         }),
       });
@@ -330,6 +385,8 @@ export function DepartmentConversationPanel({
 
   async function handleHumanHandoff() {
     if (escalating || escalatedToHuman) return;
+    if (!validateIdentityBeforeStart()) return;
+
     setEscalating(true);
 
     try {
@@ -344,6 +401,8 @@ export function DepartmentConversationPanel({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             departmentId: department.id,
+            nationalId: !authenticatedCustomer ? nationalId.trim() || undefined : undefined,
+            fullName: !authenticatedCustomer ? fullName.trim() || undefined : undefined,
             message: initialText,
           }),
         });
@@ -367,6 +426,8 @@ export function DepartmentConversationPanel({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             departmentId: department.id,
+            nationalId: !authenticatedCustomer ? nationalId.trim() || undefined : undefined,
+            fullName: !authenticatedCustomer ? fullName.trim() || undefined : undefined,
             reason: 'درخواست کاربر برای ارتباط با کارشناس پشتیبانی',
           }),
         }
@@ -385,8 +446,6 @@ export function DepartmentConversationPanel({
           id: handoffData.ticket.id,
           referenceCode: handoffData.ticket.referenceCode,
         });
-      } else if (handoffData.requiresCustomerVerification && targetConvId) {
-        setNeedsVerificationConvId(targetConvId);
       }
 
       if (Array.isArray(handoffData.messages)) {
@@ -395,7 +454,7 @@ export function DepartmentConversationPanel({
 
       toast.success(
         handoffData.ticket
-          ? `تیکت پشتیبانی با کد ${handoffData.ticket.referenceCode} ثبت و به کارشناس ارجاع شد.`
+          ? `تیکت شما با کد ${handoffData.ticket.referenceCode} ثبت و برای کارشناس ارسال شد.`
           : 'درخواست ارتباط با کارشناس با حفظ تاریخچه ثبت شد.'
       );
     } catch {
@@ -412,12 +471,13 @@ export function DepartmentConversationPanel({
   ];
 
   const hasCustomerTurns = messages.some((m) => m.senderRole === 'customer');
+  const showIdentityInputs = !authenticatedCustomer && !conversationId;
 
   return (
     <div
       className={
         variant === 'inline'
-          ? 'rounded-xl border border-slate-200 bg-white overflow-hidden flex flex-col min-h-[520px] max-h-[640px]'
+          ? 'rounded-xl border border-slate-200 bg-white overflow-hidden flex flex-col min-h-[540px] max-h-[680px]'
           : 'flex flex-col max-h-[85vh]'
       }
     >
@@ -443,9 +503,9 @@ export function DepartmentConversationPanel({
                 {restoring
                   ? 'در حال بازیابی تاریخچه گفت‌وگو...'
                   : escalatedToHuman || mode === 'waiting_for_operator'
-                  ? 'ارجاع به کارشناس پشتیبانی (آماده تبدیل به تیکت رسمی)'
+                  ? 'ثبت در صف کارشناس پشتیبانی (متصل به پرونده کد ملی شما)'
                   : department.aiEnabled
-                  ? 'پاسخگویی آنلاین هوشمند · امکان اتصال به کارشناس در هر لحظه'
+                  ? 'پاسخگویی آنلاین هوشمند · ثبت و اتصال خودکار به کارشناس'
                   : 'پاسخگویی توسط کارشناسان این دپارتمان'}
               </p>
             </div>
@@ -488,18 +548,68 @@ export function DepartmentConversationPanel({
               )}
               <span>
                 {escalatedToHuman
-                  ? 'ارجاع به کارشناس ثبت شد'
-                  : 'ارتباط با کارشناس'}
+                  ? 'تیکت برای کارشناس ثبت شد'
+                  : 'ثبت تیکت / ارتباط با کارشناس'}
               </span>
             </Button>
           </div>
         </div>
       </div>
 
+      {/* Identity Capture Strip at Conversation Start (No SMS Required) */}
+      {showIdentityInputs && (
+        <div className="border-b border-slate-200 bg-slate-50/90 px-5 py-3 space-y-2">
+          <div className="flex items-center gap-1.5 text-xs font-medium text-slate-700">
+            <IdCard className={`h-3.5 w-3.5 ${iconColorClass}`} />
+            <span>مشخصات شروع گفت‌وگو (بدون نیاز به کد پیامکی):</span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            <div className="space-y-1">
+              <Label htmlFor={`chat-nid-${variant}`} className="text-[11px] text-slate-600">
+                کد ملی (۱۰ رقم)
+              </Label>
+              <Input
+                ref={nidInputRef}
+                id={`chat-nid-${variant}`}
+                dir="ltr"
+                inputMode="numeric"
+                placeholder="0012345679"
+                value={nationalId}
+                onChange={(e) => updateNationalId(e.target.value)}
+                className="h-9 bg-white text-xs font-[family-name:var(--font-mono)] text-right"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor={`chat-name-${variant}`} className="text-[11px] text-slate-600">
+                نام و نام خانوادگی
+              </Label>
+              <Input
+                id={`chat-name-${variant}`}
+                placeholder="مثال: علی رضایی"
+                value={fullName}
+                onChange={(e) => updateFullName(e.target.value)}
+                className="h-9 bg-white text-xs"
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {authenticatedCustomer && (
+        <div className="border-b border-emerald-100 bg-emerald-50/60 px-5 py-2 text-[11px] text-emerald-900 flex items-center justify-between gap-2">
+          <span>
+            گفت‌وگو به حساب شما متصل است: <strong>{authenticatedCustomer.fullName}</strong>
+          </span>
+          <span dir="ltr" className="font-[family-name:var(--font-mono)]">
+            {authenticatedCustomer.customerRef}
+          </span>
+        </div>
+      )}
+
       {/* Messages Timeline */}
       <div
         className={`flex-1 overflow-y-auto bg-slate-50 px-5 py-4 space-y-3 ${
-          variant === 'dialog' ? 'min-h-[280px] max-h-[420px]' : ''
+          variant === 'dialog' ? 'min-h-[260px] max-h-[390px]' : ''
         }`}
       >
         {messages.map((msg) => {
@@ -529,7 +639,7 @@ export function DepartmentConversationPanel({
                 >
                   <div className="flex items-center gap-1.5 text-[11px] text-white/80">
                     <User className="h-3 w-3" />
-                    <span>شما</span>
+                    <span>{authenticatedCustomer?.fullName || fullName || 'شما'}</span>
                     <span>·</span>
                     <span className="tabular-nums">{formatTimeFa(msg.createdAt)}</span>
                   </div>
@@ -599,7 +709,7 @@ export function DepartmentConversationPanel({
                         onClick={handleHumanHandoff}
                         className="font-semibold text-blue-700 hover:underline whitespace-nowrap shrink-0 cursor-pointer"
                       >
-                        ارتباط با کارشناس
+                        ثبت تیکت و ارتباط با کارشناس
                       </button>
                     )}
                   </div>
@@ -651,10 +761,12 @@ export function DepartmentConversationPanel({
           <div className="rounded-lg border border-emerald-200 bg-emerald-50/70 px-3.5 py-2.5 text-xs text-emerald-900 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
             <span className="leading-relaxed">
               {convertedTicketRef
-                ? `تیکت پشتیبانی با کد ${convertedTicketRef.referenceCode} ثبت شد و در صف کارشناس دپارتمان است.`
-                : 'این گفت‌وگو به کارشناس ارجاع شد. برای دریافت کد پیگیری رسمی تیکت و پیوست فایل، هویت خود را تأیید کنید.'}
+                ? authenticatedCustomer
+                  ? `تیکت پشتیبانی با کد ${convertedTicketRef.referenceCode} ثبت شد و در صف کارشناس دپارتمان است.`
+                  : `تیکت شما با کد ${convertedTicketRef.referenceCode} ثبت و برای کارشناس ارسال شد. برای مشاهده پاسخ کارشناس، با کد ملی و رمز عبور وارد «پیگیری تیکت من» شوید.`
+                : 'این گفت‌وگو با حفظ تاریخچه در صف کارشناس دپارتمان قرار گرفت.'}
             </span>
-            {convertedTicketRef && onOpenConvertedTicket ? (
+            {convertedTicketRef && authenticatedCustomer && onOpenConvertedTicket ? (
               <Button
                 type="button"
                 size="sm"
@@ -664,15 +776,14 @@ export function DepartmentConversationPanel({
                 <Ticket className="h-3.5 w-3.5" />
                 <span>مشاهده تیکت من</span>
               </Button>
-            ) : needsVerificationConvId && onRequestCustomerAuthForHandoff ? (
+            ) : onOpenPortalTracking ? (
               <Button
                 type="button"
                 size="sm"
-                onClick={() =>
-                  onRequestCustomerAuthForHandoff(needsVerificationConvId)
-                }
+                onClick={onOpenPortalTracking}
               >
-                تأیید کد ملی و دریافت کد پیگیری
+                <Ticket className="h-3.5 w-3.5" />
+                <span>تأیید هویت و مشاهده تیکت‌ها</span>
               </Button>
             ) : null}
           </div>
@@ -713,14 +824,20 @@ export function DepartmentConversationPanel({
 export function DepartmentChatDialog({
   department,
   themeAccent = 'blue',
+  authenticatedCustomer = null,
+  guestIdentity,
+  onGuestIdentityChange,
   onClose,
-  onRequestCustomerAuthForHandoff,
+  onOpenPortalTracking,
   onOpenConvertedTicket,
 }: {
   department: PublicDepartmentCard | null;
   themeAccent?: ThemeAccentPreset;
+  authenticatedCustomer?: VerifiedCustomerDto | null;
+  guestIdentity?: GuestIdentityDraft;
+  onGuestIdentityChange?: (next: GuestIdentityDraft) => void;
   onClose: () => void;
-  onRequestCustomerAuthForHandoff?: (conversationId: string) => void;
+  onOpenPortalTracking?: () => void;
   onOpenConvertedTicket?: (ticketId: string) => void;
 }) {
   return (
@@ -744,7 +861,10 @@ export function DepartmentChatDialog({
               department={department}
               themeAccent={themeAccent}
               variant="dialog"
-              onRequestCustomerAuthForHandoff={onRequestCustomerAuthForHandoff}
+              authenticatedCustomer={authenticatedCustomer}
+              guestIdentity={guestIdentity}
+              onGuestIdentityChange={onGuestIdentityChange}
+              onOpenPortalTracking={onOpenPortalTracking}
               onOpenConvertedTicket={onOpenConvertedTicket}
             />
           </>

@@ -17,6 +17,7 @@ import {
   Shield,
   SlidersHorizontal,
   Sparkles,
+  UserCog,
   Users,
 } from 'lucide-react';
 import Link from 'next/link';
@@ -116,6 +117,8 @@ export function WorkspaceChrome({
   const canFiles = user.permissions.includes('files:workspace:access');
   const canDepartments = user.permissions.includes('admin:departments:manage');
   const canOperators = user.permissions.includes('admin:users:manage');
+  const isSuperAdmin = user.roles.some((r) => r.slug === 'super_admin');
+  const canSystemUsers = isSuperAdmin && canOperators;
   const canRoles = user.permissions.includes('admin:roles:manage');
   const canKb =
     user.permissions.includes('kb:workspace:access') ||
@@ -391,6 +394,19 @@ export function WorkspaceChrome({
                     <span>مدیریت اپراتورها</span>
                   </Link>
                 )}
+                {canSystemUsers && (
+                  <Link
+                    href="/workspace/admin/system-users"
+                    className={`w-full flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                      pathname.startsWith('/workspace/admin/system-users')
+                        ? 'bg-blue-50 text-blue-800'
+                        : 'text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    <UserCog className="h-4 w-4 shrink-0" />
+                    <span>کاربران سامانه</span>
+                  </Link>
+                )}
                 {canRoles && (
                   <Link
                     href="/workspace/admin/roles"
@@ -584,6 +600,14 @@ export function WorkspaceChrome({
                 className="px-3 py-1.5 rounded-md bg-white border border-slate-200 whitespace-nowrap"
               >
                 مدیریت اپراتورها
+              </Link>
+            )}
+            {canSystemUsers && (
+              <Link
+                href="/workspace/admin/system-users"
+                className="px-3 py-1.5 rounded-md bg-white border border-slate-200 whitespace-nowrap"
+              >
+                کاربران سامانه
               </Link>
             )}
             {canRoles && (

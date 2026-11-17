@@ -59,6 +59,7 @@ export interface ChatTurnResult {
 export async function handleCustomerAiMessage(params: {
   departmentId: string;
   conversationId?: string;
+  customerProfileId?: string | null;
   message: string;
   ipAddress: string | null;
   adapterOverride?: AiProviderAdapter;
@@ -111,6 +112,7 @@ export async function handleCustomerAiMessage(params: {
       .values({
         id: newId,
         departmentId: dept.id,
+        customerProfileId: params.customerProfileId ?? null,
         mode: 'ai_assisted',
         escalatedToHuman: false,
         aiAutoReplyEnabled: true,
@@ -118,6 +120,12 @@ export async function handleCustomerAiMessage(params: {
       })
       .returning();
     conversation = inserted;
+  } else if (!conversation.customerProfileId && params.customerProfileId) {
+    await db
+      .update(aiConversations)
+      .set({ customerProfileId: params.customerProfileId, updatedAt: new Date() })
+      .where(eq(aiConversations.id, conversation.id));
+    conversation = { ...conversation, customerProfileId: params.customerProfileId };
   }
 
   // Load prior messages for conversation-aware query contextualization

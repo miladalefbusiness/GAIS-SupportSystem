@@ -9,6 +9,7 @@ import {
   History,
   Loader2,
   Lock,
+  MessageSquare,
   Paperclip,
   Send,
   Sparkles,
@@ -66,6 +67,17 @@ export interface OperatorTicketDetailPayload {
       subject: string;
       status: string;
       departmentNameFa: string;
+      createdAt: string;
+    }>;
+    threadHistory?: Array<{
+      id: string;
+      sourceType: 'ticket' | 'ai_conversation';
+      ticketId: string | null;
+      referenceCode: string | null;
+      title: string;
+      departmentNameFa: string;
+      senderRole: string;
+      body: string;
       createdAt: string;
     }>;
   };
@@ -557,6 +569,83 @@ export function TicketDetailWorkspace({
               </form>
             )}
           </Card>
+
+          {/* Unified Customer Thread History Across Tickets & AI Chats */}
+          {detail.customer.threadHistory && detail.customer.threadHistory.length > 0 && (
+            <Card className="bg-white">
+              <CardHeader className="pb-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <MessageSquare className="h-4 w-4 text-blue-700" />
+                    <CardTitle className="text-sm">
+                      رشته پیام‌ها و سوابق اخیر این کاربر (پرونده کد ملی)
+                    </CardTitle>
+                  </div>
+                  <span className="text-xs text-slate-500 tabular-nums">
+                    {toPersianDigits(detail.customer.threadHistory.length)} پیام قبلی
+                  </span>
+                </div>
+                <CardDescription className="text-xs">
+                  آخرین پیام‌های ثبت‌شده توسط این کاربر در تیکت‌های پیشین و گفت‌وگوهای دستیار هوشمند در دپارتمان‌های مجاز
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-2.5 max-h-80 overflow-y-auto text-xs">
+                {detail.customer.threadHistory.map((item) => {
+                  const roleLabel =
+                    item.senderRole === 'customer'
+                      ? 'کاربر'
+                      : item.senderRole === 'operator'
+                      ? 'اپراتور'
+                      : item.senderRole === 'ai_assistant' || item.senderRole === 'assistant'
+                      ? 'دستیار هوشمند'
+                      : 'سامانه';
+                  const roleBadgeClass =
+                    item.senderRole === 'customer'
+                      ? 'bg-blue-50 text-blue-800 border-blue-200'
+                      : item.senderRole === 'operator'
+                      ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                      : 'bg-slate-100 text-slate-700 border-slate-200';
+                  return (
+                    <div
+                      key={`${item.sourceType}-${item.id}`}
+                      className="rounded-lg border border-slate-200 bg-slate-50/70 p-3 space-y-1.5"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className={`rounded border px-1.5 py-0.5 font-semibold ${roleBadgeClass}`}>
+                            {roleLabel}
+                          </span>
+                          <span className="font-medium text-slate-800">
+                            {item.departmentNameFa}
+                          </span>
+                          <span className="text-slate-400">·</span>
+                          {item.ticketId && item.referenceCode ? (
+                            <Link
+                              href={`/workspace/desk/tickets/${item.ticketId}`}
+                              className="text-blue-700 hover:underline font-medium"
+                            >
+                              <span dir="ltr" className="font-[family-name:var(--font-mono)] ml-1">
+                                {item.referenceCode}
+                              </span>
+                              <span>({item.title})</span>
+                            </Link>
+                          ) : (
+                            <span className="text-slate-600">{item.title}</span>
+                          )}
+                        </div>
+                        <span className="text-slate-400 tabular-nums shrink-0">
+                          {formatDateFa(item.createdAt)}
+                        </span>
+                      </div>
+                      <p className="text-slate-800 whitespace-pre-wrap leading-relaxed line-clamp-4">
+                        {item.body}
+                      </p>
+                    </div>
+                  );
+                })}
+              </CardContent>
+            </Card>
+          )}
 
           {/* AI Retrieval Source Context (Operator Traceability) */}
           {detail.aiSourceContext.length > 0 && (

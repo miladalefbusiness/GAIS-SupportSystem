@@ -70,6 +70,18 @@ export const updateDepartmentAiSettingsSchema = z.object({
 export const sendPublicAiMessageSchema = z.object({
   departmentId: z.string().min(1, 'شناسه دپارتمان الزامی است'),
   conversationId: z.string().min(1).optional(),
+  nationalId: z
+    .string()
+    .trim()
+    .min(10, 'کد ملی باید ۱۰ رقم باشد.')
+    .max(20, 'کد ملی نامعتبر است.')
+    .optional(),
+  fullName: z
+    .string()
+    .trim()
+    .min(2, 'نام و نام خانوادگی حداقل ۲ کاراکتر است.')
+    .max(120, 'نام و نام خانوادگی بیش از حد طولانی است.')
+    .optional(),
   message: z
     .string()
     .trim()
@@ -80,4 +92,17 @@ export const sendPublicAiMessageSchema = z.object({
 export const handoffConversationSchema = z.object({
   departmentId: z.string().min(1).optional(),
   reason: z.string().trim().max(300).optional(),
+  nationalId: z
+    .string()
+    .trim()
+    .min(10, 'کد ملی باید ۱۰ رقم باشد.')
+    .max(20, 'کد ملی نامعتبر است.')
+    .optional(),
+  fullName: z
+    .string()
+    .trim()
+    .min(2, 'نام و نام خانوادگی حداقل ۲ کاراکتر است.')
+    .max(120, 'نام و نام خانوادگی بیش از حد طولانی است.')
+    .optional(),
+  subject: z.string().trim().min(3).max(160).optional(),
 });

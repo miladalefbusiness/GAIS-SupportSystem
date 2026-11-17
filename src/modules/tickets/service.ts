@@ -1045,6 +1045,8 @@ export async function getOperatorTicketDetail(
     allDepts,
     customerRecentTickets,
     aiRetrievalRows,
+    customerTicketThreadRows,
+    customerAiThreadRows,
   ] = await Promise.all([
     db
       .select({
@@ -1140,7 +1142,7 @@ export async function getOperatorTicketDetail(
         )
       )
       .orderBy(desc(tickets.createdAt))
-      .limit(8),
+      .limit(10),
     row.ticket.linkedAiConversationId
       ? db
           .select()
@@ -1153,6 +1155,58 @@ export async function getOperatorTicketDetail(
           )
           .orderBy(asc(knowledgeRetrievalRecords.createdAt))
       : Promise.resolve([]),
+    db
+      .select({
+        id: ticketMessages.id,
+        ticketId: tickets.id,
+        referenceCode: tickets.referenceCode,
+        subject: tickets.subject,
+        departmentNameFa: departments.nameFa,
+        senderType: ticketMessages.senderType,
+        visibility: ticketMessages.visibility,
+        body: ticketMessages.body,
+        createdAt: ticketMessages.createdAt,
+      })
+      .from(ticketMessages)
+      .innerJoin(tickets, eq(ticketMessages.ticketId, tickets.id))
+      .innerJoin(departments, eq(tickets.departmentId, departments.id))
+      .where(
+        and(
+          eq(tickets.customerProfileId, row.customerId),
+          sql`${tickets.id} <> ${ticketId}`,
+          eq(ticketMessages.visibility, 'public'),
+          viewAll || access.isSuperAdmin || authorizedDeptIds.length === 0
+            ? undefined
+            : inArray(tickets.departmentId, authorizedDeptIds)
+        )
+      )
+      .orderBy(desc(ticketMessages.createdAt))
+      .limit(20),
+    db
+      .select({
+        id: aiMessages.id,
+        conversationId: aiConversations.id,
+        departmentNameFa: departments.nameFa,
+        senderRole: aiMessages.senderRole,
+        content: aiMessages.content,
+        createdAt: aiMessages.createdAt,
+      })
+      .from(aiMessages)
+      .innerJoin(aiConversations, eq(aiMessages.conversationId, aiConversations.id))
+      .innerJoin(departments, eq(aiConversations.departmentId, departments.id))
+      .where(
+        and(
+          eq(aiConversations.customerProfileId, row.customerId),
+          row.ticket.linkedAiConversationId
+            ? sql`${aiConversations.id} <> ${row.ticket.linkedAiConversationId}`
+            : undefined,
+          viewAll || access.isSuperAdmin || authorizedDeptIds.length === 0
+            ? undefined
+            : inArray(aiConversations.departmentId, authorizedDeptIds)
+        )
+      )
+      .orderBy(desc(aiMessages.createdAt))
+      .limit(16),
   ]);
 
   const attByMsg = new Map<string, Array<{
@@ -1175,6 +1229,37 @@ export async function getOperatorTicketDetail(
       attByMsg.set(a.messageId, list);
     }
   }
+
+  const combinedThreadHistory = [
+    ...customerTicketThreadRows.map((m) => ({
+      id: m.id,
+      sourceType: 'ticket' as const,
+      ticketId: m.ticketId as string | null,
+      referenceCode: m.referenceCode as string | null,
+      title: m.subject,
+      departmentNameFa: m.departmentNameFa,
+      senderRole: m.senderType,
+      body: m.body,
+      createdAt: m.createdAt,
+    })),
+    ...customerAiThreadRows.map((m) => ({
+      id: m.id,
+      sourceType: 'ai_conversation' as const,
+      ticketId: null as string | null,
+      referenceCode: null as string | null,
+      title: 'گفت‌وگوی قبلی دستیار هوشمند',
+      departmentNameFa: m.departmentNameFa,
+      senderRole: m.senderRole,
+      body: m.content,
+      createdAt: m.createdAt,
+    })),
+  ]
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+    .slice(0, 20)
+    .map((item) => ({
+      ...item,
+      createdAt: item.createdAt.toISOString(),
+    }));
 
   return {
     ticket: {
@@ -1204,6 +1289,7 @@ export async function getOperatorTicketDetail(
         ...t,
         createdAt: t.createdAt.toISOString(),
       })),
+      threadHistory: combinedThreadHistory,
     },
     messages: msgs.map((m) => ({
       id: m.id,

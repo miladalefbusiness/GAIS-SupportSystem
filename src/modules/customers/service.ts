@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomInt, randomUUID } from 'node:crypto';
+import { hashPassword, verifyPassword } from 'better-auth/crypto';
 import { and, eq, gt } from 'drizzle-orm';
 import { cookies } from 'next/headers';
 import { recordAuditLog } from '@/src/core/audit/audit.ts';
@@ -355,3 +356,228 @@ export async function revokeCustomerSessionByToken(rawToken: string | null | und
   const tokenHash = hashCustomerSessionToken(rawToken);
   await db.delete(customerSessions).where(eq(customerSessions.tokenHash, tokenHash));
 }
+
+export async function resolveOrCreateCustomerByIdentity(params: {
+  nationalId: string;
+  fullName: string;
+  phone?: string | null;
+}): Promise<{
+  id: string;
+  customerRef: string;
+  fullName: string;
+  hasPassword: boolean;
+}> {
+  const nidResult = validateIranianNationalId(params.nationalId);
+  if (!nidResult.valid) {
+    throw new Error(`INVALID_NATIONAL_ID:${nidResult.reason}`);
+  }
+
+  const nidHmac = computeNationalIdHmac(nidResult.normalized);
+  const existing = await db.query.customerProfiles.findFirst({
+    where: eq(customerProfiles.nationalIdHmac, nidHmac),
+  });
+
+  if (existing) {
+    return {
+      id: existing.id,
+      customerRef: `CUST-${existing.id.replace(/^cust_/, '').slice(0, 6).toUpperCase()}`,
+      fullName: existing.fullName,
+      hasPassword: Boolean(existing.passwordHash),
+    };
+  }
+
+  const phoneInfo = normalizeAndValidateIranianMobile(params.phone);
+  const cleanName = params.fullName.trim();
+  const newProfileId = `cust_${randomUUID()}`;
+
+  await db
+    .insert(customerProfiles)
+    .values({
+      id: newProfileId,
+      nationalIdHmac: nidHmac,
+      encryptedNationalId: encryptNationalId(nidResult.normalized),
+      nationalIdLast4: nidResult.normalized.slice(-4),
+      fullName: cleanName,
+      encryptedPhone: phoneInfo.encrypted,
+      phoneMasked: phoneInfo.masked,
+    })
+    .onConflictDoNothing({ target: customerProfiles.nationalIdHmac });
+
+  const resolved = await db.query.customerProfiles.findFirst({
+    where: eq(customerProfiles.nationalIdHmac, nidHmac),
+  });
+
+  if (!resolved) {
+    throw new Error('CUSTOMER_PROFILE_MISSING');
+  }
+
+  return {
+    id: resolved.id,
+    customerRef: `CUST-${resolved.id.replace(/^cust_/, '').slice(0, 6).toUpperCase()}`,
+    fullName: resolved.fullName,
+    hasPassword: Boolean(resolved.passwordHash),
+  };
+}
+
+export async function authenticateCustomerWithPassword(params: {
+  nationalId: string;
+  password: string;
+  fullName?: string;
+  phone?: string | null;
+  mode?: 'auto' | 'login' | 'set_password';
+  ipAddress: string | null;
+  userAgent: string | null;
+}) {
+  const nidResult = validateIranianNationalId(params.nationalId);
+  if (!nidResult.valid) {
+    throw new Error(`INVALID_NATIONAL_ID:${nidResult.reason}`);
+  }
+
+  const nidHmac = computeNationalIdHmac(nidResult.normalized);
+  const ipLimit = checkRateLimit(
+    `cust-pwd-ip:${params.ipAddress || 'unknown'}`,
+    25,
+    5 * 60_000
+  );
+  if (!ipLimit.allowed) {
+    throw new Error(`RATE_LIMITED:${ipLimit.retryAfterSeconds}`);
+  }
+
+  const nidLimit = checkRateLimit(`cust-pwd-nid:${nidHmac}`, 10, 5 * 60_000);
+  if (!nidLimit.allowed) {
+    throw new Error(`RATE_LIMITED:${nidLimit.retryAfterSeconds}`);
+  }
+
+  const mode = params.mode ?? 'auto';
+  const existing = await db.query.customerProfiles.findFirst({
+    where: eq(customerProfiles.nationalIdHmac, nidHmac),
+  });
+
+  let profile = existing;
+  let isFirstTimeSetup = false;
+
+  if (!profile) {
+    if (mode === 'login') {
+      throw new Error('CUSTOMER_NEEDS_FIRST_TIME_PASSWORD');
+    }
+    const cleanName = params.fullName?.trim() || '';
+    if (cleanName.length < 2) {
+      throw new Error('FIRST_TIME_SETUP_NEEDS_NAME');
+    }
+
+    const phoneInfo = normalizeAndValidateIranianMobile(params.phone);
+    const pwdHash = await hashPassword(params.password);
+    const newId = `cust_${randomUUID()}`;
+    const now = new Date();
+
+    await db
+      .insert(customerProfiles)
+      .values({
+        id: newId,
+        nationalIdHmac: nidHmac,
+        encryptedNationalId: encryptNationalId(nidResult.normalized),
+        nationalIdLast4: nidResult.normalized.slice(-4),
+        fullName: cleanName,
+        encryptedPhone: phoneInfo.encrypted,
+        phoneMasked: phoneInfo.masked,
+        passwordHash: pwdHash,
+        passwordUpdatedAt: now,
+      })
+      .onConflictDoNothing({ target: customerProfiles.nationalIdHmac });
+
+    profile = await db.query.customerProfiles.findFirst({
+      where: eq(customerProfiles.nationalIdHmac, nidHmac),
+    });
+    if (!profile) {
+      throw new Error('CUSTOMER_PROFILE_MISSING');
+    }
+    isFirstTimeSetup = true;
+  } else if (!profile.passwordHash) {
+    // Customer previously submitted a ticket/conversation with national ID + name without setting a password yet
+    if (mode === 'login') {
+      throw new Error('CUSTOMER_NEEDS_FIRST_TIME_PASSWORD');
+    }
+    const pwdHash = await hashPassword(params.password);
+    const now = new Date();
+    const phoneInfo = params.phone?.trim()
+      ? normalizeAndValidateIranianMobile(params.phone)
+      : null;
+
+    await db
+      .update(customerProfiles)
+      .set({
+        passwordHash: pwdHash,
+        passwordUpdatedAt: now,
+        ...(phoneInfo ? { encryptedPhone: phoneInfo.encrypted, phoneMasked: phoneInfo.masked } : {}),
+        updatedAt: now,
+      })
+      .where(eq(customerProfiles.id, profile.id));
+
+    profile = {
+      ...profile,
+      passwordHash: pwdHash,
+      passwordUpdatedAt: now,
+      ...(phoneInfo ? { phoneMasked: phoneInfo.masked } : {}),
+    };
+    isFirstTimeSetup = true;
+  } else {
+    // Profile already has a password
+    if (mode === 'set_password') {
+      throw new Error('PASSWORD_ALREADY_SET');
+    }
+    const isValid = await verifyPassword({
+      hash: profile.passwordHash,
+      password: params.password,
+    });
+    if (!isValid) {
+      await recordAuditLog({
+        actorType: 'anonymous',
+        action: 'customer.auth.password_failed',
+        targetType: 'customer_profile',
+        targetId: profile.id,
+        ipAddress: params.ipAddress,
+        userAgent: params.userAgent,
+      });
+      throw new Error('INVALID_CUSTOMER_CREDENTIALS');
+    }
+  }
+
+  const rawToken = randomBytes(32).toString('base64url');
+  const tokenHash = hashCustomerSessionToken(rawToken);
+  const sessionId = `cses_${randomUUID()}`;
+  const sessionExpiresAt = new Date(Date.now() + SESSION_TTL_MS);
+
+  await db.insert(customerSessions).values({
+    id: sessionId,
+    customerProfileId: profile.id,
+    tokenHash,
+    expiresAt: sessionExpiresAt,
+    ipAddress: params.ipAddress,
+    userAgent: params.userAgent,
+  });
+
+  await recordAuditLog({
+    actorType: 'anonymous',
+    action: isFirstTimeSetup
+      ? 'customer.auth.password_initialized'
+      : 'customer.auth.password_login',
+    targetType: 'customer_profile',
+    targetId: profile.id,
+    ipAddress: params.ipAddress,
+    userAgent: params.userAgent,
+  });
+
+  return {
+    rawSessionToken: rawToken,
+    expiresAt: sessionExpiresAt,
+    isFirstTimeSetup,
+    customer: {
+      id: profile.id,
+      customerRef: `CUST-${profile.id.replace(/^cust_/, '').slice(0, 6).toUpperCase()}`,
+      fullName: profile.fullName,
+      phoneMasked: profile.phoneMasked,
+      createdAt: profile.createdAt.toISOString(),
+    },
+  };
+}
+

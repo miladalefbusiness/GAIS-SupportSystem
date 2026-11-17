@@ -3,6 +3,10 @@ import { extractRequestContext } from '@/src/core/audit/audit.ts';
 import { logger } from '@/src/core/logging/logger.ts';
 import { handleCustomerAiMessage } from '@/src/modules/ai/chat.ts';
 import { sendPublicAiMessageSchema } from '@/src/modules/ai/schemas.ts';
+import {
+  getAuthenticatedCustomerSession,
+  resolveOrCreateCustomerByIdentity,
+} from '@/src/modules/customers/service.ts';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,9 +23,29 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const customerSession = await getAuthenticatedCustomerSession();
+    let customerProfileId: string | null = customerSession?.customer.id ?? null;
+
+    if (!customerProfileId && parsed.data.nationalId && parsed.data.fullName) {
+      const resolved = await resolveOrCreateCustomerByIdentity({
+        nationalId: parsed.data.nationalId,
+        fullName: parsed.data.fullName,
+      });
+      customerProfileId = resolved.id;
+    } else if (!customerProfileId && !parsed.data.conversationId) {
+      return NextResponse.json(
+        {
+          error:
+            'لطفاً برای شروع گفت‌وگو و ثبت سوابق، کد ملی و نام و نام خانوادگی خود را وارد کنید.',
+        },
+        { status: 400 }
+      );
+    }
+
     const result = await handleCustomerAiMessage({
       departmentId: parsed.data.departmentId,
       conversationId: parsed.data.conversationId,
+      customerProfileId,
       message: parsed.data.message,
       ipAddress,
     });
@@ -29,6 +53,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(result);
   } catch (error) {
     const message = error instanceof Error ? error.message : '';
+    if (message.startsWith('INVALID_NATIONAL_ID:')) {
+      return NextResponse.json(
+        { error: message.slice('INVALID_NATIONAL_ID:'.length) },
+        { status: 400 }
+      );
+    }
     if (message.startsWith('RATE_LIMITED:')) {
       const retryAfter = Number(message.split(':')[1]) || 60;
       return NextResponse.json(

@@ -23,6 +23,7 @@ import { CustomerTicketsPortal } from '@/components/public/CustomerTicketsPortal
 import {
   DepartmentChatDialog,
   DepartmentConversationPanel,
+  type GuestIdentityDraft,
 } from '@/components/public/DepartmentChatDialog';
 import { Button } from '@/components/ui/button';
 import {
@@ -88,23 +89,23 @@ const ACCENT_BADGE_BG: Record<ThemeAccentPreset, string> = {
 const CUSTOMER_SUPPORT_STEPS = [
   {
     step: '۱',
-    title: 'انتخاب دپارتمان تخصصی',
+    title: 'انتخاب دپارتمان و درج مشخصات',
     description:
-      'واحد مرتبط با سؤال یا درخواست خود را انتخاب کنید تا به راهنمای همان بخش متصل شوید.',
+      'دپارتمان مرتبط را انتخاب کنید و با وارد کردن کد ملی و نام و نام خانوادگی، بدون نیاز به پیامک یا احراز هویت پیچیده گفت‌وگو را آغاز نمایید.',
     icon: Building2,
   },
   {
     step: '۲',
-    title: 'گفت‌وگوی فوری آنلاین',
+    title: 'ارسال پیام یا ثبت مستقیم تیکت',
     description:
-      'پاسخ بسیاری از پرسش‌ها بلافاصله از طریق دستیار هوشمند ارائه می‌شود و در هر زمان می‌توانید با کارشناس ارتباط بگیرید.',
+      'سوال خود را بپرسید یا درخواست را مستقیماً به تیکت کارشناس تبدیل کنید. تمام پیام‌های شما با کد ملی در پنل کارشناسان یکپارچه ثبت می‌شود.',
     icon: MessageCircle,
   },
   {
     step: '۳',
-    title: 'دریافت کد پیگیری تیکت',
+    title: 'ورود با رمز عبور برای پیگیری تیکت',
     description:
-      'در صورت نیاز به بررسی کارشناسی یا ارسال فایل، گفت‌وگو با احراز هویت سریع به تیکت رسمی تبدیل و پیگیری می‌شود.',
+      'هر زمان که بخواهید پاسخ کارشناسان و سوابق تیکت‌های خود را ببینید، از بخش «تأیید هویت و مشاهده تیکت‌ها» با کد ملی و رمز عبور وارد شوید.',
     icon: Ticket,
   },
 ];
@@ -131,15 +132,16 @@ export function PublicShell({
   const [modalDepartment, setModalDepartment] =
     useState<PublicDepartmentCard | null>(null);
 
+  const [guestIdentity, setGuestIdentity] = useState<GuestIdentityDraft>({
+    nationalId: '',
+    fullName: '',
+  });
   const [customer, setCustomer] = useState<VerifiedCustomerDto | null>(null);
   const [customerTickets, setCustomerTickets] = useState<
     CustomerTicketSummaryDto[]
   >([]);
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
   const [authDialogOpen, setAuthDialogOpen] = useState(false);
-  const [pendingHandoffConvId, setPendingHandoffConvId] = useState<string | null>(
-    null
-  );
 
   const filteredDepartments = useMemo(() => {
     const q = deptQuery.trim().toLowerCase();
@@ -202,34 +204,7 @@ export function PublicShell({
 
   async function handleCustomerVerified(verified: VerifiedCustomerDto) {
     setCustomer(verified);
-
-    if (pendingHandoffConvId) {
-      const convId = pendingHandoffConvId;
-      setPendingHandoffConvId(null);
-      try {
-        const res = await fetch('/api/public/tickets', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ aiConversationId: convId }),
-        });
-        const data = await res.json();
-        if (res.ok && data.ticket) {
-          toast.success(
-            `تیکت پشتیبانی با کد ${data.ticket.referenceCode} از گفت‌وگوی شما ایجاد شد.`
-          );
-          setModalDepartment(null);
-          await refreshCustomerSession();
-          setSelectedTicketId(data.ticket.id);
-          document
-            .getElementById('customer-portal')
-            ?.scrollIntoView({ behavior: 'smooth' });
-          return;
-        }
-      } catch {
-        // Fall back to standard refresh
-      }
-    }
-
+    setModalDepartment(null);
     await refreshCustomerSession();
     document
       .getElementById('customer-portal')
@@ -273,12 +248,6 @@ export function PublicShell({
             >
               انتخاب دپارتمان و گفت‌وگو
             </a>
-            <a
-              href="#customer-portal"
-              className="hover:text-slate-900 transition-colors whitespace-nowrap shrink-0"
-            >
-              پیگیری تیکت‌های من
-            </a>
             {settings.showWorkspacesSummary && (
               <a
                 href="#support-guide"
@@ -299,7 +268,6 @@ export function PublicShell({
                     .getElementById('customer-portal')
                     ?.scrollIntoView({ behavior: 'smooth' });
                 } else {
-                  setPendingHandoffConvId(null);
                   setAuthDialogOpen(true);
                 }
               }}
@@ -359,24 +327,6 @@ export function PublicShell({
                     <span>انتخاب دپارتمان و شروع گفت‌وگو</span>
                   </a>
                 </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="lg"
-                  onClick={() => {
-                    if (customer) {
-                      document
-                        .getElementById('customer-portal')
-                        ?.scrollIntoView({ behavior: 'smooth' });
-                    } else {
-                      setPendingHandoffConvId(null);
-                      setAuthDialogOpen(true);
-                    }
-                  }}
-                >
-                  <Ticket className="h-4 w-4" />
-                  <span>{customer ? 'مشاهده تیکت‌های من' : 'پیگیری تیکت‌های قبلی'}</span>
-                </Button>
               </div>
             </motion.div>
           </div>
@@ -390,8 +340,7 @@ export function PublicShell({
                 انتخاب دپارتمان و گفت‌وگوی آنلاین
               </h2>
               <p className="text-sm text-slate-600">
-                دپارتمان مرتبط را انتخاب کنید و بلافاصله پرسش خود را بپرسید یا درخواست
-                ارتباط با کارشناس دهید.
+                دپارتمان مرتبط را انتخاب کنید، کد ملی و نام خود را بنویسید و بلافاصله گفت‌وگو یا ثبت تیکت را شروع کنید.
               </p>
             </div>
             {departments.length > 0 && (
@@ -516,10 +465,18 @@ export function PublicShell({
                     department={activeDepartment}
                     themeAccent={settings.themeAccent}
                     variant="inline"
+                    authenticatedCustomer={customer}
+                    guestIdentity={guestIdentity}
+                    onGuestIdentityChange={setGuestIdentity}
                     onExpandModal={() => setModalDepartment(activeDepartment)}
-                    onRequestCustomerAuthForHandoff={(convId) => {
-                      setPendingHandoffConvId(convId);
-                      setAuthDialogOpen(true);
+                    onOpenPortalTracking={() => {
+                      if (customer) {
+                        document
+                          .getElementById('customer-portal')
+                          ?.scrollIntoView({ behavior: 'smooth' });
+                      } else {
+                        setAuthDialogOpen(true);
+                      }
                     }}
                     onOpenConvertedTicket={(ticketId) => {
                       void refreshCustomerSession();
@@ -535,18 +492,17 @@ export function PublicShell({
           )}
         </section>
 
-        {/* Customer OTP Ticket Portal */}
+        {/* Customer Ticket Portal */}
         <CustomerTicketsPortal
           departments={departments}
           customer={customer}
           tickets={customerTickets}
           selectedTicketId={selectedTicketId}
+          guestIdentity={guestIdentity}
+          onGuestIdentityChange={setGuestIdentity}
           onSelectTicket={setSelectedTicketId}
           onRefreshSession={refreshCustomerSession}
-          onOpenAuth={() => {
-            setPendingHandoffConvId(null);
-            setAuthDialogOpen(true);
-          }}
+          onOpenAuth={() => setAuthDialogOpen(true)}
           onLogout={handleCustomerLogout}
         />
 
@@ -630,10 +586,19 @@ export function PublicShell({
         key={modalDepartment?.id ?? 'closed'}
         department={modalDepartment}
         themeAccent={settings.themeAccent}
+        authenticatedCustomer={customer}
+        guestIdentity={guestIdentity}
+        onGuestIdentityChange={setGuestIdentity}
         onClose={() => setModalDepartment(null)}
-        onRequestCustomerAuthForHandoff={(convId) => {
-          setPendingHandoffConvId(convId);
-          setAuthDialogOpen(true);
+        onOpenPortalTracking={() => {
+          setModalDepartment(null);
+          if (customer) {
+            document
+              .getElementById('customer-portal')
+              ?.scrollIntoView({ behavior: 'smooth' });
+          } else {
+            setAuthDialogOpen(true);
+          }
         }}
         onOpenConvertedTicket={(ticketId) => {
           setModalDepartment(null);
@@ -648,7 +613,8 @@ export function PublicShell({
       <CustomerAuthDialog
         open={authDialogOpen}
         onOpenChange={setAuthDialogOpen}
-        purpose={pendingHandoffConvId ? 'ticket_handoff' : 'customer_portal'}
+        initialNationalId={guestIdentity.nationalId}
+        initialFullName={guestIdentity.fullName}
         onVerified={handleCustomerVerified}
       />
     </div>

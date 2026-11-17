@@ -45,6 +45,18 @@ export const createCustomerTicketSchema = z.object({
     .min(3, 'شرح درخواست باید حداقل ۳ کاراکتر باشد.')
     .max(4000, 'شرح درخواست بیش از ۴۰۰۰ کاراکتر است.'),
   priority: z.enum(TICKET_PRIORITIES).optional().default('normal'),
+  nationalId: z
+    .string()
+    .trim()
+    .min(10, 'کد ملی باید ۱۰ رقم باشد.')
+    .max(20, 'کد ملی نامعتبر است.')
+    .optional(),
+  fullName: z
+    .string()
+    .trim()
+    .min(2, 'نام و نام خانوادگی حداقل ۲ کاراکتر است.')
+    .max(120, 'نام و نام خانوادگی بیش از حد طولانی است.')
+    .optional(),
 });
 
 export const convertAiConversationSchema = z.object({
