@@ -1,27 +1,39 @@
 # syntax=docker/dockerfile:1
 
-FROM node:22-alpine AS base
+FROM --platform=$BUILDPLATFORM node:22-alpine AS build-base
 WORKDIR /app
-ENV NEXT_TELEMETRY_DISABLED=1
+ENV NEXT_TELEMETRY_DISABLED=1 \
+    NPM_CONFIG_FETCH_RETRIES=5 \
+    NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=20000 \
+    NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=120000 \
+    NPM_CONFIG_MAXSOCKETS=6
 
-FROM base AS deps
+FROM build-base AS deps
 RUN apk add --no-cache libc6-compat python3 make g++
 COPY package.json package-lock.json* ./
 RUN if [ -f package-lock.json ]; then npm ci --legacy-peer-deps --no-audit --no-fund; else npm install --legacy-peer-deps --no-audit --no-fund; fi
 
-FROM base AS builder
+FROM build-base AS builder
 ARG APP_VERSION=0.1.0
 ENV APP_VERSION=${APP_VERSION}
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
 
-FROM base AS prod-deps
+FROM node:22-alpine AS prod-deps
+WORKDIR /app
+ENV NEXT_TELEMETRY_DISABLED=1 \
+    NPM_CONFIG_FETCH_RETRIES=5 \
+    NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=20000 \
+    NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=120000 \
+    NPM_CONFIG_MAXSOCKETS=4
 RUN apk add --no-cache libc6-compat
 COPY package.json package-lock.json* ./
 RUN if [ -f package-lock.json ]; then npm ci --omit=dev --legacy-peer-deps --no-audit --no-fund; else npm install --omit=dev --legacy-peer-deps --no-audit --no-fund; fi
 
-FROM base AS runner
+FROM node:22-alpine AS runner
+WORKDIR /app
+ENV NEXT_TELEMETRY_DISABLED=1
 ARG APP_VERSION=0.1.0
 LABEL org.opencontainers.image.title="SupportDesk Enterprise AI Support & File Hub" \
       org.opencontainers.image.version="${APP_VERSION}"
@@ -40,6 +52,7 @@ RUN mkdir -p /var/lib/supportdesk/storage /app/logs \
   && chown -R nextjs:nodejs /var/lib/supportdesk /app
 
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+RUN rm -rf ./node_modules
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/drizzle ./drizzle
