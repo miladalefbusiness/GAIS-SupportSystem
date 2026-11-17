@@ -50,10 +50,16 @@ export function resolveStorageRoot(): string {
   return path.isAbsolute(raw) ? raw : path.resolve(process.cwd(), raw);
 }
 
+const isNextBuildPhase = (): boolean =>
+  process.env.NEXT_PHASE === 'phase-production-build';
+
 export function getAuthSecret(): string {
   const envSecret = process.env.BETTER_AUTH_SECRET;
   if (envSecret && envSecret.length >= 32) {
     return envSecret;
+  }
+  if (isNextBuildPhase()) {
+    return 'build-phase-ephemeral-secret-not-used-at-runtime-32chars';
   }
   if (process.env.NODE_ENV === 'production') {
     // Allow fallback ONLY when running inside managed Cloud Run without explicit BETTER_AUTH_SECRET
@@ -71,6 +77,9 @@ export function getAppEncryptionKey(): string {
   if (raw && raw.trim().length >= 32) {
     return raw.trim();
   }
+  if (isNextBuildPhase()) {
+    return 'build-phase-ephemeral-aes256-key-not-used-at-runtime-64chars';
+  }
   if (process.env.NODE_ENV === 'production') {
     if (process.env.K_SERVICE && process.env.SQL_PASSWORD) {
       return `enc-${process.env.SQL_PASSWORD}-${process.env.APPLET_ID || 'supportdesk'}`;
@@ -84,6 +93,9 @@ export function getAppHmacKey(): string {
   const raw = process.env.APP_HMAC_KEY;
   if (raw && raw.trim().length >= 32) {
     return raw.trim();
+  }
+  if (isNextBuildPhase()) {
+    return 'build-phase-ephemeral-hmac256-key-not-used-at-runtime-64chars';
   }
   if (process.env.NODE_ENV === 'production') {
     if (process.env.K_SERVICE && process.env.SQL_PASSWORD) {

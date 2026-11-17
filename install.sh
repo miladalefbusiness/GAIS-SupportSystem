@@ -802,6 +802,11 @@ deploy_and_verify() {
   compose_args+=(--env-file "$env_file")
 
   log "5/8 Preparing container images (APP_VERSION=${TARGET_VERSION})..."
+  if [ -n "$GITHUB_TOKEN" ] && printf '%s' "$IMAGE_REPO" | grep -q '^ghcr\.io/'; then
+    local ghcr_user="${GITHUB_REPO%%/*}"
+    [ -n "$ghcr_user" ] || ghcr_user="x-access-token"
+    printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io -u "$ghcr_user" --password-stdin >/dev/null 2>&1 || true
+  fi
   if [ "$LOCAL_MODE" = "true" ] || [ "$SOURCE_FROM_GIT" = "true" ]; then
     docker compose "${compose_args[@]}" build app
   else
