@@ -1,4 +1,4 @@
-# Organizational AI Support Desk & File Hub
+# Organizational AI Support Desk & File Hub (`GAIS-SupportSystem`)
 ### سامانه پشتیبانی هوشمند سازمانی و مخزن فایل اشتراکی
 
 Self-hosted organizational support platform combining an **Enterprise CRAG Knowledge Desk**, **Customer Portal (National ID + Password Auth & Ticket Threads)**, **Operator Workspace**, **Departmental Shared File Hub**, and **Super Admin Console**.
@@ -7,126 +7,130 @@ Self-hosted organizational support platform combining an **Enterprise CRAG Knowl
 
 ## One-Command Installation (Production Linux VPS)
 
-Run the official installer on **Ubuntu 22.04+/24.04, Debian 12+, Rocky/AlmaLinux 9+, or Fedora** (no manual Node.js, PostgreSQL, or Docker setup required):
+Supports **Ubuntu 22.04+/24.04, Debian 12+, Rocky/AlmaLinux 9+, and Fedora** — no manual Node.js, PostgreSQL, or Docker setup required.
 
-### Option 1 — Direct from Your GitHub Repository (`main` branch)
-
-Replace `<GITHUB_USER>/<REPO>` with your GitHub repository slug:
+### Option 1 — Public Repository (One-Click Install)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<GITHUB_USER>/<REPO>/main/install.sh | sudo bash -s -- --repo <GITHUB_USER>/<REPO>
+curl -fsSL https://raw.githubusercontent.com/miladalefbusiness/GAIS-SupportSystem/main/install.sh | sudo bash
 ```
 
-### Option 2 — From a Tagged GitHub Release (SHA256-Verified Bundle + Prebuilt Image)
+Or from a published GitHub Release:
 
 ```bash
-curl -fsSL https://github.com/<GITHUB_USER>/<REPO>/releases/latest/download/install.sh | sudo bash -s -- --repo <GITHUB_USER>/<REPO>
+curl -fsSL https://github.com/miladalefbusiness/GAIS-SupportSystem/releases/latest/download/install.sh | sudo bash
 ```
+
+### Option 2 — Private Repository (with Read-Only GitHub Token)
+
+While `miladalefbusiness/GAIS-SupportSystem` is private, pass a read-only GitHub PAT via `GITHUB_TOKEN`:
+
+```bash
+export GITHUB_TOKEN="YOUR_READONLY_GITHUB_TOKEN"
+curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
+  https://raw.githubusercontent.com/miladalefbusiness/GAIS-SupportSystem/main/install.sh \
+  | sudo -E bash
+```
+
+*(Note: `GITHUB_TOKEN` is used only in memory during download/clone and is never written to `.env` or disk.)*
 
 ### Option 3 — From a Local Cloned Repository
 
 ```bash
-git clone https://github.com/<GITHUB_USER>/<REPO>.git /opt/supportdesk-src
+git clone https://github.com/miladalefbusiness/GAIS-SupportSystem.git /opt/supportdesk-src
 cd /opt/supportdesk-src
 sudo bash install.sh --local --dir /opt/supportdesk
 ```
 
 ---
 
-## What the Interactive Installer Prompts You For
+## Interactive Setup Wizard (What the Installer Prompts You For)
 
-When the one-command installer runs, it automatically verifies OS/arch, disk/RAM, ports `80`/`443`, installs Docker Engine + Compose v2 if missing, and launches a resumable interactive wizard asking for:
+Running the installer performs system preflight checks, installs Docker Engine + Compose v2 if missing, verifies release integrity (`SHA256SUMS` when installing a tagged release, or clones `main` cleanly), and walks you through an interactive setup wizard:
 
 1. **Domain & Locale**:
-   - Domain / subdomain (e.g. `support.example.com`, or `localhost` for local testing)
-   - Public `APP_URL`, Timezone (`TZ`, default `Asia/Tehran`), Max Upload MB (`MAX_UPLOAD_MB`, default `25`)
+   - `DOMAIN_NAME` (e.g. `support.example.com`, or `localhost` for local testing)
+   - `APP_URL`, Timezone (`TZ`, default `Asia/Tehran`), Max Upload Size (`MAX_UPLOAD_MB`, default `25`)
 2. **Automatic HTTPS (Caddy + Let's Encrypt)**:
-   - ACME TLS notification email (`ACME_EMAIL`) — automatically issues and renews HTTPS certificates once DNS points to the server
+   - `ACME_EMAIL` for automatic TLS certificate issuance and renewal (ports `80`/`443`)
 3. **Initial Super Admin Account**:
    - `SUPERADMIN_USERNAME` (editable anytime later via CLI)
-   - `SUPERADMIN_EMAIL` and Display Name (`SUPERADMIN_NAME`)
-   - `SUPERADMIN_PASSWORD` (enter a custom password or auto-generate a strong one displayed once at completion)
-4. **PostgreSQL + pgvector Database**:
-   - **Bundled PostgreSQL 16 + pgvector** (recommended, internal Docker network only, auto-generated strong DB passwords)
+   - `SUPERADMIN_EMAIL` & Display Name (`SUPERADMIN_NAME`)
+   - `SUPERADMIN_PASSWORD` (set manually with strength check or auto-generate a strong password printed once at completion)
+4. **PostgreSQL + `pgvector` Database**:
+   - **Bundled PostgreSQL 16 + `pgvector`** (recommended, internal Docker network only, auto-generated strong passwords)
    - **External PostgreSQL** (`SQL_HOST`, `SQL_PORT`, `SQL_DB_NAME`, `SQL_USER`, `SQL_PASSWORD`)
 5. **Enterprise RAG & AI Provider (Optional at Install)**:
-   - Configure **Native Gemini** or any **OpenAI-compatible `AI_BASE_URL`**, API key (encrypted with `AES-256-GCM`), chat model, and embedding model — or skip and configure later in Super Admin UI or `supportdesk config`
+   - Native Google Gemini or any OpenAI-compatible `AI_BASE_URL`, API key (encrypted via `AES-256-GCM`), chat model, and embedding model — or skip and configure later in Super Admin UI or `supportdesk config`
 6. **Optional Integrations**:
    - **SMTP**, **SMS OTP Webhook**, or **S3-compatible Object Storage**
 
-All generated cryptographic secrets (`BETTER_AUTH_SECRET`, `APP_ENCRYPTION_KEY`, `APP_HMAC_KEY`) are written to `/opt/supportdesk/.env` with `chmod 600`. Migrations (`scripts/migrate.ts`), Super Admin bootstrap (`scripts/bootstrap.ts`), `/api/health/ready`, and `/usr/local/bin/supportdesk` are verified automatically before reporting success.
+All generated cryptographic secrets (`BETTER_AUTH_SECRET`, `APP_ENCRYPTION_KEY`, `APP_HMAC_KEY`) are written to `/opt/supportdesk/.env` (`chmod 600`). Database migrations, Super Admin bootstrap, `/api/health/ready`, and `/usr/local/bin/supportdesk` are verified before reporting success.
 
 ---
 
 ## Editing Super Admin Credentials & Variables via CLI
 
-Once installed, the global `supportdesk` CLI is available anywhere on the host (`sudo supportdesk ...`):
+Once installed, manage everything from anywhere on the server with `supportdesk`:
 
-### Interactive Configuration Editor (Domain, AI, SMTP/SMS, Super Admin)
+### Interactive Configuration Editor (`supportdesk config`)
 
 ```bash
 supportdesk config
 ```
 
-Select option **`4) Super Admin Credentials (Username, Email, Display Name & Password)`** to edit the Super Admin username, email, display name, or password interactively — or select options `1`–`3` to update `DOMAIN_NAME`, `APP_URL`, `TZ`, `MAX_UPLOAD_MB`, `ACME_EMAIL`, AI keys/models, SMTP, or SMS settings and apply them automatically.
+Select from the interactive menu:
+- `1)` Domain, `APP_URL`, Timezone, Max Upload & ACME Email
+- `2)` AI Provider Settings (Base URL, API Key, Chat & Embedding Models)
+- `3)` Optional Integrations (SMTP / SMS Webhook / S3)
+- `4)` **Super Admin Credentials (Username, Email, Display Name & Password)**
+- `5)` Validate `.env` only
 
-### Direct CLI Commands for Super Admin & Staff Accounts
+### Direct Administrator Commands (`supportdesk admin`)
 
 ```bash
 # List administrator accounts (password hashes are never shown)
 supportdesk admin list
 
-# Edit Super Admin username, email, display name, and/or password interactively
+# Edit Super Admin username, email, display name, and/or password interactively:
 supportdesk admin update
 
-# Or pass explicit flags directly:
+# Or update directly with flags:
 supportdesk admin update --username superadmin --new-username owner_admin --email owner@example.com
 supportdesk admin reset-password --username owner_admin --force-change
 
-# Create another administrator, suspend/re-enable, or require password change
+# Create, suspend, re-enable, or require password change on next login:
 supportdesk admin create
 supportdesk admin disable --username old_admin
 supportdesk admin enable --username old_admin
 supportdesk admin force-password-change --username owner_admin
 ```
 
-> Changing a username or resetting a password automatically revokes active login sessions in PostgreSQL, updates `.env` bootstrap metadata when editing the primary Super Admin, and writes an audit log entry.
+---
+
+## Deploying & Publishing Tagged Releases on GitHub
+
+Pushing a version tag automatically runs `.github/workflows/release.yml`, which builds multi-arch (`linux/amd64`, `linux/arm64`) images on `ghcr.io/miladalefbusiness/gais-supportsystem` and attaches `install.sh`, `supportdesk-v<VERSION>.tar.gz`, `release-manifest.json`, and `SHA256SUMS` to GitHub Releases:
+
+```bash
+git tag -a v0.2.0 -m "Release v0.2.0"
+git push origin v0.2.0
+```
+
+Upgrade any running production server cleanly with automatic pre-update backup and rollback protection:
+
+```bash
+supportdesk update --check
+supportdesk update --version 0.2.0
+```
 
 ---
 
-## Deploying & Publishing Releases via GitHub
-
-1. **Push your repository to GitHub**:
-   ```bash
-   git init
-   git add .
-   git commit -m "Initial production release"
-   git branch -M main
-   git remote add origin https://github.com/<GITHUB_USER>/<REPO>.git
-   git push -u origin main
-   ```
-2. **Publish a versioned GitHub Release (triggers `.github/workflows/release.yml`)**:
-   ```bash
-   git tag v0.1.0
-   git push origin v0.1.0
-   ```
-   GitHub Actions automatically:
-   - Builds and pushes multi-arch (`linux/amd64`, `linux/arm64`) pinned Docker images to `ghcr.io/<github_user>/<repo>:0.1.0`
-   - Packages `supportdesk-v0.1.0.tar.gz`, `release-manifest.json`, `install.sh`, and `SHA256SUMS` to the GitHub Release page
-3. **Update an existing server to a new pinned release**:
-   ```bash
-   supportdesk update --check
-   supportdesk update --version 0.2.0
-   ```
-   (`update` automatically takes a full `supportdesk backup --all` first, verifies SHA256 checksums, runs migrations, and rolls back automatically if `/api/health/ready` fails.)
-
----
-
-## Everyday Operations & Documentation
+## Documentation Index
 
 | Guide | Topics Covered |
 |---|---|
-| [`INSTALL.md`](./INSTALL.md) | Server requirements, flags (`--repo`, `--branch`, `--version`, `--local`), and wizard flow |
+| [`INSTALL.md`](./INSTALL.md) | Server requirements, public/private repo install flags (`--repo`, `--branch`, `--token`, `--version`, `--local`) |
 | [`CLI.md`](./CLI.md) | Complete reference for `supportdesk status\|health\|config\|admin\|backup\|restore\|update\|repair\|reinstall\|reset` |
 | [`DEPLOYMENT.md`](./DEPLOYMENT.md) | Multi-container Docker Compose architecture (`postgres`, `app`, `worker`, `proxy`) |
 | [`UPDATE.md`](./UPDATE.md) | Pinned version upgrade workflow and rollback rules |

@@ -31,7 +31,7 @@ services:
       dockerfile: Dockerfile
       args:
         APP_VERSION: ${APP_VERSION:?APP_VERSION must be pinned to a release version}
-    image: ${APP_IMAGE:-ghcr.io/your-org/supportdesk}:${APP_VERSION:?APP_VERSION must be pinned to a release version}
+    image: ${APP_IMAGE:-ghcr.io/miladalefbusiness/gais-supportsystem}:${APP_VERSION:?APP_VERSION must be pinned to a release version}
     restart: unless-stopped
     depends_on:
       postgres:
@@ -99,7 +99,7 @@ services:
       - internal
 
   worker:
-    image: ${APP_IMAGE:-ghcr.io/your-org/supportdesk}:${APP_VERSION:?APP_VERSION must be pinned to a release version}
+    image: ${APP_IMAGE:-ghcr.io/miladalefbusiness/gais-supportsystem}:${APP_VERSION:?APP_VERSION must be pinned to a release version}
     restart: unless-stopped
     depends_on:
       postgres:

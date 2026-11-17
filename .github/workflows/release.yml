@@ -83,8 +83,10 @@ jobs:
             --exclude='node_modules' \
             --exclude='.next' \
             --exclude='.env' \
-            --exclude='.env.*' \
-            --exclude='!.env.example' \
+            --exclude='.env.local' \
+            --exclude='.env.production' \
+            --exclude='.env.development' \
+            --exclude='.env.test' \
             --exclude='data' \
             --exclude='backups' \
             --exclude='tests' \

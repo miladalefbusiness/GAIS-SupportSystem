@@ -10,13 +10,15 @@ set -euo pipefail
 # ==============================================================================
 
 DEFAULT_INSTALL_DIR="/opt/supportdesk"
-DEFAULT_RELEASE_BASE="https://github.com/your-org/supportdesk/releases/download"
-DEFAULT_IMAGE_REPO="ghcr.io/your-org/supportdesk"
+DEFAULT_GITHUB_REPO="miladalefbusiness/GAIS-SupportSystem"
+DEFAULT_RELEASE_BASE="https://github.com/miladalefbusiness/GAIS-SupportSystem/releases/download"
+DEFAULT_IMAGE_REPO="ghcr.io/miladalefbusiness/gais-supportsystem"
 FALLBACK_VERSION="0.1.0"
 
 INSTALL_DIR="${SUPPORTDESK_INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
-GITHUB_REPO="${SUPPORTDESK_GITHUB_REPO:-}"
+GITHUB_REPO="${SUPPORTDESK_GITHUB_REPO:-$DEFAULT_GITHUB_REPO}"
 GITHUB_BRANCH="${SUPPORTDESK_GITHUB_BRANCH:-main}"
+GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 RELEASE_BASE="${SUPPORTDESK_RELEASE_BASE:-$DEFAULT_RELEASE_BASE}"
 IMAGE_REPO="${SUPPORTDESK_IMAGE_REPO:-$DEFAULT_IMAGE_REPO}"
 TARGET_VERSION=""
@@ -49,8 +51,9 @@ Usage:
   install.sh [options]
 
 Options:
-  --repo <owner/repo>  GitHub repository slug (sets release download & GHCR image path automatically)
+  --repo <owner/repo>  GitHub repository slug (default: miladalefbusiness/GAIS-SupportSystem)
   --branch <name>      GitHub branch to clone if no published release tarball exists (default: main)
+  --token <pat>        Optional GitHub token for private repositories (also reads GITHUB_TOKEN env)
   --version <X.Y.Z>    Pin a specific release version (never 'latest')
   --dir <path>         Target installation directory (default: /opt/supportdesk)
   --registry <url>     Custom container image registry prefix (e.g. registry.example.com/org)
@@ -79,6 +82,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --repo) GITHUB_REPO="${2:-}"; shift 2 ;;
     --branch) GITHUB_BRANCH="${2:-main}"; shift 2 ;;
+    --token) GITHUB_TOKEN="${2:-}"; shift 2 ;;
     --version) TARGET_VERSION="${2:-}"; shift 2 ;;
     --dir) INSTALL_DIR="${2:-}"; shift 2 ;;
     --registry) IMAGE_REPO="${2%/}/supportdesk"; shift 2 ;;
@@ -377,7 +381,11 @@ resolve_target_version() {
   local api_url latest_ver=""
   api_url="$(printf '%s' "$RELEASE_BASE" | sed -E 's|https://github.com/([^/]+/[^/]+)/releases/download|https://api.github.com/repos/\1/releases/latest|')"
   if [ "$api_url" != "$RELEASE_BASE" ]; then
-    latest_ver="$(curl -fsSL --max-time 6 "$api_url" 2>/dev/null | grep '"tag_name"' | head -n1 | sed -E 's/.*"tag_name": *"v?([^"]+)".*/\1/' || true)"
+    if [ -n "$GITHUB_TOKEN" ]; then
+      latest_ver="$(curl -fsSL --max-time 6 -H "Authorization: Bearer ${GITHUB_TOKEN}" "$api_url" 2>/dev/null | grep '"tag_name"' | head -n1 | sed -E 's/.*"tag_name": *"v?([^"]+)".*/\1/' || true)"
+    else
+      latest_ver="$(curl -fsSL --max-time 6 "$api_url" 2>/dev/null | grep '"tag_name"' | head -n1 | sed -E 's/.*"tag_name": *"v?([^"]+)".*/\1/' || true)"
+    fi
   fi
   if [ -n "$latest_ver" ] && [ "$latest_ver" != "latest" ]; then
     printf '%s' "$latest_ver"
@@ -415,17 +423,6 @@ prepare_release_files() {
         -cf - . | tar -C "$INSTALL_DIR" -xf -
     fi
   else
-    if [ -z "$GITHUB_REPO" ] && [ "$RELEASE_BASE" = "$DEFAULT_RELEASE_BASE" ]; then
-      if [ "$NON_INTERACTIVE" = "true" ]; then
-        err "Specify --repo <owner/repo> or --mirror <url> or --local when running non-interactively."
-      fi
-      printf '\n' >/dev/tty
-      tty_read "GitHub repository (owner/repo, e.g. myuser/supportdesk)" GITHUB_REPO ""
-      [ -n "$GITHUB_REPO" ] || err "GitHub repository (owner/repo) is required when not using --local."
-      apply_github_repo_defaults "$GITHUB_REPO"
-      TARGET_VERSION="$(resolve_target_version)"
-    fi
-
     log "Target release version: v${TARGET_VERSION}"
     local stage_dir tarball sums_file tarball_name
     stage_dir="$(mktemp -d)"
@@ -434,9 +431,24 @@ prepare_release_files() {
     tarball="${stage_dir}/${tarball_name}"
     sums_file="${stage_dir}/SHA256SUMS"
 
+    local downloaded_release="false"
     log "Checking published GitHub Release bundle at ${RELEASE_BASE}/v${TARGET_VERSION}/${tarball_name}..."
     if curl -fsSL "${RELEASE_BASE}/v${TARGET_VERSION}/${tarball_name}" -o "$tarball" 2>/dev/null \
       && curl -fsSL "${RELEASE_BASE}/v${TARGET_VERSION}/SHA256SUMS" -o "$sums_file" 2>/dev/null; then
+      downloaded_release="true"
+    elif [ -n "$GITHUB_TOKEN" ] && [ -n "$GITHUB_REPO" ]; then
+      local rel_json tarball_api_url sums_api_url
+      rel_json="$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/v${TARGET_VERSION}" 2>/dev/null || true)"
+      tarball_api_url="$(printf '%s' "$rel_json" | grep -B2 -A4 "\"name\": *\"${tarball_name}\"" | grep '"url":' | head -n1 | sed -E 's/.*"url": *"([^"]+)".*/\1/' || true)"
+      sums_api_url="$(printf '%s' "$rel_json" | grep -B2 -A4 '"name": *"SHA256SUMS"' | grep '"url":' | head -n1 | sed -E 's/.*"url": *"([^"]+)".*/\1/' || true)"
+      if [ -n "$tarball_api_url" ] && [ -n "$sums_api_url" ]; then
+        curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" -H "Accept: application/octet-stream" "$tarball_api_url" -o "$tarball" 2>/dev/null \
+          && curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" -H "Accept: application/octet-stream" "$sums_api_url" -o "$sums_file" 2>/dev/null \
+          && downloaded_release="true"
+      fi
+    fi
+
+    if [ "$downloaded_release" = "true" ]; then
       (
         cd "$stage_dir"
         grep -E "[[:space:]](\./)?${tarball_name}$" SHA256SUMS > tarball.sha256 \
@@ -446,7 +458,7 @@ prepare_release_files() {
       ok "Release SHA256 integrity verified."
       tar -xzf "$tarball" -C "$INSTALL_DIR"
     elif [ -n "$GITHUB_REPO" ]; then
-      warn "No published release archive found at ${RELEASE_BASE}/v${TARGET_VERSION}; cloning https://github.com/${GITHUB_REPO}.git (branch: ${GITHUB_BRANCH}) and building container locally..."
+      warn "No accessible release archive found at ${RELEASE_BASE}/v${TARGET_VERSION}; cloning https://github.com/${GITHUB_REPO}.git (branch: ${GITHUB_BRANCH}) and building container locally..."
       if ! command -v git >/dev/null 2>&1; then
         if command -v apt-get >/dev/null 2>&1; then
           DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git
@@ -458,8 +470,24 @@ prepare_release_files() {
           err "git is required to clone https://github.com/${GITHUB_REPO}.git"
         fi
       fi
-      git clone --depth 1 --branch "$GITHUB_BRANCH" "https://github.com/${GITHUB_REPO}.git" "${stage_dir}/src" \
-        || err "Failed to clone https://github.com/${GITHUB_REPO}.git (branch: ${GITHUB_BRANCH})."
+      if [ -n "$GITHUB_TOKEN" ]; then
+        local askpass="${stage_dir}/askpass.sh"
+        cat > "$askpass" <<'ASKEOF'
+#!/bin/sh
+case "$1" in
+  *Username*) printf '%s\n' "x-access-token" ;;
+  *) printf '%s\n' "$GITHUB_TOKEN" ;;
+esac
+ASKEOF
+        chmod 700 "$askpass"
+        GIT_TERMINAL_PROMPT=0 GIT_ASKPASS="$askpass" GITHUB_TOKEN="$GITHUB_TOKEN" \
+          git clone --depth 1 --branch "$GITHUB_BRANCH" "https://github.com/${GITHUB_REPO}.git" "${stage_dir}/src" \
+          || err "Failed to clone https://github.com/${GITHUB_REPO}.git (check repository permissions / token)."
+        rm -f "$askpass"
+      else
+        GIT_TERMINAL_PROMPT=0 git clone --depth 1 --branch "$GITHUB_BRANCH" "https://github.com/${GITHUB_REPO}.git" "${stage_dir}/src" \
+          || err "Failed to clone https://github.com/${GITHUB_REPO}.git (if private, pass --token <PAT> or set GITHUB_TOKEN)."
+      fi
       if [ -f "${stage_dir}/src/package.json" ]; then
         TARGET_VERSION="$(grep '"version"' "${stage_dir}/src/package.json" | head -n1 | sed -E 's/.*"version": *"([^"]+)".*/\1/' || echo "$TARGET_VERSION")"
       fi

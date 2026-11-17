@@ -13,7 +13,7 @@ ENV_FILE="${SUPPORTDESK_ENV_FILE:-${ROOT_DIR}/.env}"
 BACKUP_DIR="${SUPPORTDESK_BACKUP_DIR:-${ROOT_DIR}/backups}"
 STORAGE_DIR="${SUPPORTDESK_STORAGE_DIR:-${ROOT_DIR}/data/storage}"
 PACKAGE_JSON="${ROOT_DIR}/package.json"
-DEFAULT_RELEASE_BASE="https://github.com/your-org/supportdesk/releases/download"
+DEFAULT_RELEASE_BASE="https://github.com/miladalefbusiness/GAIS-SupportSystem/releases/download"
 
 # Colors when interactive
 if [ -t 1 ]; then

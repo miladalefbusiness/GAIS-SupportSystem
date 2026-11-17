@@ -16,19 +16,30 @@ export async function POST(
   const { id } = await context.params;
   const { ipAddress, userAgent } = extractRequestContext(req.headers);
 
+  let isAsync = false;
+  try {
+    const body = await req.json();
+    if (body && typeof body === 'object' && body.async === true) {
+      isAsync = true;
+    }
+  } catch {
+    // Empty request body defaults to synchronous execution
+  }
+
   try {
     const result = await reprocessKnowledgeDocument({
       documentId: id,
       actorUserId: guard.session.user.id,
       ipAddress,
       userAgent,
+      async: isAsync,
     });
 
     if (!result) {
       return NextResponse.json({ error: 'سند یافت نشد.' }, { status: 404 });
     }
 
-    return NextResponse.json(result);
+    return NextResponse.json(result, { status: isAsync ? 202 : 200 });
   } catch (error) {
     const msg = error instanceof Error ? error.message : 'REPROCESS_FAILED';
     logger.error('admin.kb.document_reprocess_failed', { error: msg });

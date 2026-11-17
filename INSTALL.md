@@ -16,10 +16,17 @@
 
 ## Option A: One-Command Installation from GitHub (`main` branch)
 
-Works immediately after pushing your code to GitHub (even before publishing a tagged GitHub Release — automatically falls back to cloning `--branch main` and building the pinned container image if no Release bundle exists yet):
+Works immediately (automatically falls back to cloning `--branch main` and building the pinned container image if no Release bundle is published yet):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<GITHUB_USER>/<REPO>/main/install.sh | sudo bash -s -- --repo <GITHUB_USER>/<REPO>
+# Public repository:
+curl -fsSL https://raw.githubusercontent.com/miladalefbusiness/GAIS-SupportSystem/main/install.sh | sudo bash
+
+# Private repository (token is kept in memory only, never saved to .env):
+export GITHUB_TOKEN="YOUR_READONLY_GITHUB_TOKEN"
+curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
+  https://raw.githubusercontent.com/miladalefbusiness/GAIS-SupportSystem/main/install.sh \
+  | sudo -E bash
 ```
 
 ## Option B: One-Command Installation from a Tagged GitHub Release
@@ -27,15 +34,13 @@ curl -fsSL https://raw.githubusercontent.com/<GITHUB_USER>/<REPO>/main/install.s
 Downloads the `SHA256SUMS`-verified `supportdesk-vX.Y.Z.tar.gz` release bundle and pulls the prebuilt multi-arch `ghcr.io` image:
 
 ```bash
-curl -fsSL https://github.com/<GITHUB_USER>/<REPO>/releases/latest/download/install.sh | sudo bash -s -- \
-  --repo <GITHUB_USER>/<REPO> \
-  --version 0.1.0
+curl -fsSL https://github.com/miladalefbusiness/GAIS-SupportSystem/releases/latest/download/install.sh | sudo bash -s -- --version 0.1.0
 ```
 
 ## Option C: Installing from a Local Cloned Repository
 
 ```bash
-git clone https://github.com/<GITHUB_USER>/<REPO>.git /opt/supportdesk-src
+git clone https://github.com/miladalefbusiness/GAIS-SupportSystem.git /opt/supportdesk-src
 cd /opt/supportdesk-src
 sudo bash install.sh --local --dir /opt/supportdesk
 ```
@@ -50,8 +55,9 @@ sudo bash install.sh --local --dir /opt/supportdesk --non-interactive
 
 | Flag | Description |
 |---|---|
-| `--repo <owner/repo>` | GitHub repository slug (auto-configures `RELEASE_BASE_URL` & `APP_IMAGE`) |
+| `--repo <owner/repo>` | GitHub repository slug (default: `miladalefbusiness/GAIS-SupportSystem`) |
 | `--branch <name>` | Branch to clone when no published release tarball exists (default: `main`) |
+| `--token <pat>` | Optional GitHub token for private repositories (also reads `GITHUB_TOKEN` env) |
 | `--version <X.Y.Z>` | Pin a specific release version (refuses `latest`) |
 | `--dir <path>` | Target installation directory (default: `/opt/supportdesk`) |
 | `--registry <url>` | Custom container image registry mirror prefix |
