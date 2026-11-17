@@ -1,0 +1,13 @@
+# Compose override when administrator selects an external PostgreSQL server (DB_MODE=external)
+services:
+  postgres:
+    profiles:
+      - disabled
+
+  app:
+    depends_on: !reset []
+
+  worker:
+    depends_on:
+      app:
+        condition: service_healthy

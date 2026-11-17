@@ -36,6 +36,13 @@
       "when": 1794806928735,
       "tag": "0004_grey_mindworm",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794917771129,
+      "tag": "0005_enterprise_rag_and_customer_auth",
+      "breakpoints": true
     }
   ]
 }

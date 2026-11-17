@@ -49,3 +49,15 @@
 11. **خنثی‌سازی خروجی CSV و صفحات خطای امن**:
     - خروجی‌های CSV با پیشوند خنثی‌ساز (`'`) از حملات Formula Injection محافظت می‌شوند.
     - صفحات خطای `app/error.tsx` و `app/(workspace)/workspace/error.tsx` بدون نمایش Stack Trace یا متغیرهای محیطی، بازیابی امن RTL را ارائه می‌کنند.
+
+## کنترل‌های امنیتی استقرار تولیدی و CLI مدیریت (Production Deployment Hardening)
+12. **ایزوله‌سازی شبکه، اجرای غیرروت و HTTPS خودکار**:
+    - سرویس PostgreSQL (`pgvector/pgvector:pg16`) روی شبکه داخلی `internal` قرار دارد و هیچ پورت عمومی روی میزبان باز نمی‌کند (`app` با کاربر کم‌دسترسی `SQL_USER` به پایگاه داده متصل می‌شود).
+    - کانتینرهای `app` و `worker` با کاربر غیرروت `nextjs:nodejs` (UID/GID `1001`) و `no-new-privileges:true` اجرا شده و به `docker.sock` دسترسی ندارند.
+    - پراکسی معکوس Caddy به‌صورت خودکار گواهینامه TLS را مدیریت کرده و ترافیک HTTP را به HTTPS هدایت و هدرهای امنیتی (`HSTS`, `X-Frame-Options`, `X-Content-Type-Options`) را اعمال می‌کند.
+13. **حفاظت از `.env`، کلیدهای AI و بسته‌های پشتیبان**:
+    - فایل `.env` با دسترسی `0600` و بدون بازنویسی خودکار نگهداری می‌شود و توسط `scripts/env-check.ts` در زمان راه‌اندازی از نظر نبود مقادیر Placeholder (`CHANGE_ME`) و طول اسرار بررسی می‌گردد.
+    - کلید API هوش مصنوعی واردشده در نصب یا `supportdesk config` پیش از ذخیره در PostgreSQL با `AES-256-GCM` رمزنگاری می‌شود (`scripts/admin-cli.ts ai-sync`).
+    - بسته‌های پشتیبان در دایرکتوری با دسترسی `0700` و فایل `0600` همراه با `SHA256` و متادیتای بدون رمز ذخیره شده و آرشیوهای انتشار پیش از استقرار با `SHA256SUMS` راستی‌آزمایی می‌شوند.
+    - دستورات `supportdesk admin reset-password`، `disable` و `force-password-change` تمامی نشست‌های فعال (`authentication_sessions`) را بلافاصله باطل کرده و رویداد را در `audit_logs` ثبت می‌کنند.
+

@@ -1,0 +1,30 @@
+__GLOBAL_OPTIONS__
+
+{$DOMAIN_NAME:localhost} {
+  encode zstd gzip
+
+  request_body {
+    max_size {$MAX_UPLOAD_MB:25}MB
+  }
+
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "DENY"
+    Referrer-Policy "strict-origin-when-cross-origin"
+    Permissions-Policy "camera=(), microphone=(), geolocation=()"
+    -Server
+  }
+
+  reverse_proxy app:3000 {
+    header_up X-Real-IP {remote_host}
+    header_up X-Forwarded-Proto {scheme}
+    flush_interval -1
+    transport http {
+      dial_timeout 10s
+      response_header_timeout 120s
+      read_timeout 120s
+      write_timeout 120s
+    }
+  }
+}

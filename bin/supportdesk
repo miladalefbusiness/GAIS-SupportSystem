@@ -1,33 +1,113 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ENV_FILE="${ROOT_DIR}/.env"
-BACKUP_DIR="${ROOT_DIR}/backups"
-APP_VERSION_FILE="${ROOT_DIR}/package.json"
+SOURCE_PATH="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE_PATH" ]; do
+  SOURCE_DIR="$(cd -P "$(dirname "$SOURCE_PATH")" && pwd)"
+  SOURCE_PATH="$(readlink "$SOURCE_PATH")"
+  [[ "$SOURCE_PATH" != /* ]] && SOURCE_PATH="${SOURCE_DIR}/${SOURCE_PATH}"
+done
 
-log() {
-  printf '[supportdesk] %s\n' "$1"
-}
+ROOT_DIR="${SUPPORTDESK_HOME:-$(cd -P "$(dirname "$SOURCE_PATH")/.." && pwd)}"
+ENV_FILE="${SUPPORTDESK_ENV_FILE:-${ROOT_DIR}/.env}"
+BACKUP_DIR="${SUPPORTDESK_BACKUP_DIR:-${ROOT_DIR}/backups}"
+STORAGE_DIR="${SUPPORTDESK_STORAGE_DIR:-${ROOT_DIR}/data/storage}"
+PACKAGE_JSON="${ROOT_DIR}/package.json"
+DEFAULT_RELEASE_BASE="https://github.com/your-org/supportdesk/releases/download"
 
-err() {
-  printf '[supportdesk][ERROR] %s\n' "$1" >&2
-  exit 1
-}
+# Colors when interactive
+if [ -t 1 ]; then
+  C_RESET='\033[0m'
+  C_BLUE='\033[1;34m'
+  C_GREEN='\033[0;32m'
+  C_YELLOW='\033[1;33m'
+  C_RED='\033[0;31m'
+else
+  C_RESET='' C_BLUE='' C_GREEN='' C_YELLOW='' C_RED=''
+fi
+
+log()  { printf '%b[supportdesk]%b %s\n' "$C_BLUE" "$C_RESET" "$1"; }
+ok()   { printf '%b[supportdesk][OK]%b %s\n' "$C_GREEN" "$C_RESET" "$1"; }
+warn() { printf '%b[supportdesk][WARN]%b %s\n' "$C_YELLOW" "$C_RESET" "$1" >&2; }
+err()  { printf '%b[supportdesk][ERROR]%b %s\n' "$C_RED" "$C_RESET" "$1" >&2; exit 1; }
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || err "Required command '$1' is not installed."
 }
 
+get_env_val() {
+  local key="$1"
+  local default="${2:-}"
+  if [ ! -f "$ENV_FILE" ]; then
+    printf '%s' "$default"
+    return 0
+  fi
+  local line
+  line="$(grep -E "^${key}=" "$ENV_FILE" | tail -n1 || true)"
+  if [ -z "$line" ]; then
+    printf '%s' "$default"
+    return 0
+  fi
+  local val="${line#*=}"
+  val="${val%\"}"
+  val="${val#\"}"
+  val="${val%\'}"
+  val="${val#\'}"
+  printf '%s' "$val"
+}
+
+set_env_val() {
+  local key="$1"
+  local val="$2"
+  local tmp
+  tmp="$(mktemp "${ROOT_DIR}/.env.tmp.XXXXXX")"
+  chmod 600 "$tmp"
+  if [ ! -f "$ENV_FILE" ]; then
+    cp "${ROOT_DIR}/.env.example" "$tmp"
+  else
+    cp "$ENV_FILE" "$tmp"
+  fi
+  K="$key" V="$val" awk '
+    BEGIN { k = ENVIRON["K"]; v = ENVIRON["V"]; found = 0 }
+    index($0, k "=") == 1 { print k "=\"" v "\""; found = 1; next }
+    { print }
+    END { if (!found) print k "=\"" v "\"" }
+  ' "$tmp" > "${tmp}.out"
+  chmod 600 "${tmp}.out"
+  mv "${tmp}.out" "$ENV_FILE"
+  rm -f "$tmp"
+}
+
+compose_files_args() {
+  local db_mode
+  db_mode="$(get_env_val DB_MODE bundled)"
+  if [ "$db_mode" = "external" ] && [ -f "${ROOT_DIR}/docker-compose.external-db.yml" ]; then
+    printf '%s\n' "-f" "${ROOT_DIR}/docker-compose.yml" "-f" "${ROOT_DIR}/docker-compose.external-db.yml"
+  else
+    printf '%s\n' "-f" "${ROOT_DIR}/docker-compose.yml"
+  fi
+}
+
 compose() {
-  docker compose -f "${ROOT_DIR}/docker-compose.yml" --env-file "${ENV_FILE}" "$@"
+  require_cmd docker
+  local files=()
+  while IFS= read -r line; do
+    files+=("$line")
+  done < <(compose_files_args)
+  docker compose "${files[@]}" --env-file "$ENV_FILE" "$@"
 }
 
 current_version() {
-  if [ -f "${ENV_FILE}" ] && grep -q '^APP_VERSION=' "${ENV_FILE}"; then
-    grep '^APP_VERSION=' "${ENV_FILE}" | head -n1 | cut -d= -f2- | tr -d '"'
+  local ver
+  ver="$(get_env_val APP_VERSION "")"
+  if [ -n "$ver" ]; then
+    printf '%s' "$ver"
+    return 0
+  fi
+  if [ -f "$PACKAGE_JSON" ]; then
+    grep '"version"' "$PACKAGE_JSON" | head -n1 | sed -E 's/.*"version": *"([^"]+)".*/\1/'
   else
-    grep '"version"' "${APP_VERSION_FILE}" | head -n1 | sed -E 's/.*"version": *"([^"]+)".*/\1/'
+    printf '0.1.0'
   fi
 }
 
@@ -35,13 +115,49 @@ generate_hex() {
   openssl rand -hex 32
 }
 
-wait_healthy() {
-  local retries=30
+generate_password() {
+  local core
+  core="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 14)"
+  printf '%sA1!z' "$core"
+}
+
+validate_env_inside_container() {
+  if compose ps --status running app >/dev/null 2>&1 && [ -n "$(compose ps -q app 2>/dev/null || true)" ]; then
+    compose exec -T app node ./node_modules/tsx/dist/cli.mjs ./scripts/env-check.ts
+  else
+    compose run --rm --no-deps -T -e VALIDATE_ENV_ON_START=false --entrypoint "" app node ./node_modules/tsx/dist/cli.mjs ./scripts/env-check.ts
+  fi
+}
+
+wait_postgres_healthy() {
+  local db_mode
+  db_mode="$(get_env_val DB_MODE bundled)"
+  if [ "$db_mode" = "external" ]; then
+    log "Using external PostgreSQL ($(get_env_val SQL_HOST):$(get_env_val SQL_PORT 5432)); skipping local container wait."
+    return 0
+  fi
+  local pg_user pg_db retries=30 count=0
+  pg_user="$(get_env_val POSTGRES_USER supportdesk_admin)"
+  pg_db="$(get_env_val POSTGRES_DB supportdesk)"
+  log "Waiting for PostgreSQL container readiness..."
+  while [ "$count" -lt "$retries" ]; do
+    if compose exec -T postgres pg_isready -U "$pg_user" -d "$pg_db" >/dev/null 2>&1; then
+      ok "PostgreSQL is healthy."
+      return 0
+    fi
+    count=$((count + 1))
+    sleep 2
+  done
+  err "PostgreSQL failed readiness check after $((retries * 2)) seconds."
+}
+
+wait_app_healthy() {
+  local retries="${1:-45}"
   local count=0
-  log "Waiting for application readiness health check..."
+  log "Waiting for application readiness (/api/health/ready)..."
   while [ "$count" -lt "$retries" ]; do
     if compose exec -T app wget -qO- http://127.0.0.1:3000/api/health/ready >/dev/null 2>&1; then
-      log "Application is healthy and ready."
+      ok "Application is healthy and ready."
       return 0
     fi
     count=$((count + 1))
@@ -50,152 +166,1020 @@ wait_healthy() {
   err "Application failed readiness check after $((retries * 2)) seconds."
 }
 
-cmd_install() {
-  require_cmd docker
-  require_cmd openssl
-  docker compose version >/dev/null 2>&1 || err "Docker Compose v2 is required."
-
-  mkdir -p "${BACKUP_DIR}" "${ROOT_DIR}/data/storage"
-
-  if [ ! -f "${ENV_FILE}" ]; then
-    log "Creating ${ENV_FILE} from .env.example with freshly generated secrets..."
-    cp "${ROOT_DIR}/.env.example" "${ENV_FILE}"
-    sed -i.bak \
-      -e "s|CHANGE_ME_APP_DB_PASSWORD|$(generate_hex)|g" \
-      -e "s|CHANGE_ME_ADMIN_DB_PASSWORD|$(generate_hex)|g" \
-      -e "s|CHANGE_ME_GENERATE_AT_LEAST_32_CHARS_RANDOM_HEX|$(generate_hex)|g" \
-      -e "s|CHANGE_ME_64_HEX_CHARS_FOR_AES_256_GCM|$(generate_hex)|g" \
-      -e "s|CHANGE_ME_64_HEX_CHARS_FOR_HMAC_SHA256|$(generate_hex)|g" \
-      -e "s|CHANGE_ME_INITIAL_BOOTSTRAP_PASSWORD|$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | head -c 16)|g" \
-      "${ENV_FILE}"
-    rm -f "${ENV_FILE}.bak"
-    chmod 600 "${ENV_FILE}"
-    log "Generated ${ENV_FILE}. Please review DOMAIN_NAME, APP_URL, and SUPERADMIN_PASSWORD before production exposure."
-  else
-    log "Existing ${ENV_FILE} found; preserving existing secrets."
+ensure_dirs_and_permissions() {
+  mkdir -p "$BACKUP_DIR" "$STORAGE_DIR"
+  chmod 700 "$BACKUP_DIR"
+  chmod 750 "$STORAGE_DIR"
+  if [ -f "$ENV_FILE" ]; then
+    chmod 600 "$ENV_FILE"
   fi
-
-  log "Building/pulling versioned containers and starting PostgreSQL..."
-  compose up -d postgres
-  log "Waiting for PostgreSQL readiness..."
-  sleep 5
-  compose up -d --build app proxy
-  wait_healthy
-  log "Installation completed successfully."
 }
 
-cmd_backup() {
-  require_cmd docker
-  [ -f "${ENV_FILE}" ] || err "Missing ${ENV_FILE}. Run install first."
-  mkdir -p "${BACKUP_DIR}"
-  local stamp
-  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-  local db_dump="${BACKUP_DIR}/db_${stamp}.sql.gz"
-  local files_archive="${BACKUP_DIR}/storage_${stamp}.tar.gz"
+# ==============================================================================
+# General Commands: help, version, status, health, logs, start, stop, restart, config
+# ==============================================================================
 
-  local pg_user pg_db
-  pg_user="$(grep '^POSTGRES_USER=' "${ENV_FILE}" | cut -d= -f2- | tr -d '"')"
-  pg_db="$(grep '^POSTGRES_DB=' "${ENV_FILE}" | cut -d= -f2- | tr -d '"')"
+cmd_help() {
+  cat <<EOF
+SupportDesk Management CLI (v$(current_version))
 
-  log "Creating PostgreSQL backup at ${db_dump}..."
-  compose exec -T postgres pg_dump --clean --if-exists --no-owner --no-privileges -U "${pg_user:-supportdesk_admin}" "${pg_db:-supportdesk}" | gzip -9 > "${db_dump}"
-  gzip -t "${db_dump}" || err "PostgreSQL backup archive verification failed."
+Usage:
+  supportdesk <command> [options]
 
-  log "Creating persistent storage backup at ${files_archive}..."
-  compose exec -T app tar -czf - -C /var/lib/supportdesk/storage . > "${files_archive}"
-  tar -tzf "${files_archive}" >/dev/null || err "Storage backup archive verification failed."
+General Management:
+  help                        Show this help message
+  version                     Print installed application version
+  status                      Show container states and readiness summary
+  health                      Run comprehensive database, storage, worker & HTTP health checks
+  logs [service]              Follow logs (app | worker | postgres | proxy | all)
+  start                       Start all SupportDesk services
+  stop                        Stop all SupportDesk services safely
+  restart [service]           Restart all services or a single service
+  config                      Inspect or safely update .env & AI configuration
 
-  log "Backup completed and verified: ${db_dump} and ${files_archive}"
-}
+Installation & Repair:
+  install [--non-interactive] Run interactive setup wizard or apply existing .env
+  repair                      Diagnose and repair stopped containers, networks, permissions & health
+  reinstall [--version X.Y.Z] Recreate app & worker containers while preserving ALL data
+  reset --destroy-data        DESTRUCTIVE: Wipe containers, database volumes & uploaded files
 
-cmd_restore() {
-  local db_dump="${1:-}"
-  local files_archive="${2:-}"
-  [ -n "${db_dump}" ] && [ -f "${db_dump}" ] || err "Usage: supportdesk restore <db_dump.sql.gz> [storage.tar.gz]"
+Updates:
+  update [--version X.Y.Z]    Backup, verify release, migrate, upgrade & health-check
+  update --check              Check available releases against current version
+  update --registry <url>     Override container image registry during update
 
-  log "Verifying backup archive integrity before modifying running services..."
-  gzip -t "${db_dump}" || err "Corrupt PostgreSQL backup archive: ${db_dump}"
-  if [ -n "${files_archive}" ]; then
-    [ -f "${files_archive}" ] || err "Storage archive not found: ${files_archive}"
-    tar -tzf "${files_archive}" >/dev/null || err "Corrupt storage backup archive: ${files_archive}"
-  fi
+Backup & Restore:
+  backup [--all|--database|--files]  Create verified, checksummed backup bundle
+  backup list                        List available backups with sizes & timestamps
+  backup prune [--keep N]            Prune old backups keeping newest N (default: ${BACKUP_RETENTION_COUNT:-14})
+  restore [--file <archive.tar.gz>]  Validate checksum & restore backup consistently
 
-  printf 'WARNING: Restoring will overwrite current database records. Type YES to continue: '
-  read -r confirm
-  [ "${confirm}" = "YES" ] || err "Restore aborted by user."
-
-  local pg_user pg_db
-  pg_user="$(grep '^POSTGRES_USER=' "${ENV_FILE}" | cut -d= -f2- | tr -d '"')"
-  pg_db="$(grep '^POSTGRES_DB=' "${ENV_FILE}" | cut -d= -f2- | tr -d '"')"
-
-  log "Stopping app container before restore..."
-  compose stop app
-
-  log "Restoring PostgreSQL from ${db_dump}..."
-  gunzip -c "${db_dump}" | compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "${pg_user:-supportdesk_admin}" -d "${pg_db:-supportdesk}"
-
-  if [ -n "${files_archive}" ] && [ -f "${files_archive}" ]; then
-    log "Restoring persistent storage from ${files_archive}..."
-    compose run --rm --no-deps -T app sh -c 'rm -rf /var/lib/supportdesk/storage/* && tar -xzf - -C /var/lib/supportdesk/storage' < "${files_archive}"
-  fi
-
-  log "Starting application..."
-  compose up -d app proxy
-  wait_healthy
-  log "Restore completed."
-}
-
-cmd_update() {
-  local target_version="${1:-}"
-  [ -n "${target_version}" ] || err "Usage: supportdesk update <version> (explicit version tag required; never 'latest')"
-  [ "${target_version}" != "latest" ] || err "Refusing to deploy 'latest' tag. Provide an explicit release version."
-  [ -f "${ENV_FILE}" ] || err "Missing ${ENV_FILE}."
-
-  log "Current version: $(current_version) -> Target version: ${target_version}"
-  cmd_backup
-
-  sed -i.bak "s|^APP_VERSION=.*|APP_VERSION=\"${target_version}\"|" "${ENV_FILE}"
-  rm -f "${ENV_FILE}.bak"
-
-  compose pull app || true
-  compose up -d --build app proxy
-  wait_healthy
-  log "Update to version ${target_version} completed."
-}
-
-cmd_status() {
-  compose ps
-  compose exec -T app wget -qO- http://127.0.0.1:3000/api/health/ready || true
-  echo ""
-}
-
-cmd_logs() {
-  compose logs -f --tail=100 "${1:-app}"
+Administrator Management:
+  admin list                  List staff and administrator accounts (no password hashes shown)
+  admin create                Create a new administrator or Super Admin account
+  admin update                Edit an admin's username, email, display name, or password
+  admin reset-password        Reset an administrator password & revoke active sessions
+  admin disable               Suspend an administrator account & revoke active sessions
+  admin enable                Re-enable a suspended administrator account
+  admin force-password-change Require password change on next login
+EOF
 }
 
 cmd_version() {
   printf '%s\n' "$(current_version)"
 }
 
-case "${1:-}" in
-  install) cmd_install ;;
-  update) shift; cmd_update "${1:-}" ;;
-  backup) cmd_backup ;;
-  restore) shift; cmd_restore "${1:-}" "${2:-}" ;;
-  status) cmd_status ;;
-  logs) shift; cmd_logs "${1:-app}" ;;
-  version) cmd_version ;;
-  *)
-    cat <<EOF
-Usage: supportdesk <command>
-  install                     Verify environment, generate secrets, start Docker stack
-  update <version>            Backup DB & storage, deploy explicit version, run migrations, verify health
-  backup                      Create compressed PostgreSQL & persistent storage backups
-  restore <db.sql.gz> [files] Interactive restore from backup archives
-  status                      Show container and readiness status
-  logs [service]              Tail logs for a service (default: app)
-  version                     Print configured application version
+cmd_status() {
+  [ -f "$ENV_FILE" ] || err "Missing ${ENV_FILE}. Run 'supportdesk install' first."
+  compose ps
+  echo ""
+  local health_json
+  health_json="$(compose exec -T app wget -qO- http://127.0.0.1:3000/api/health/ready 2>/dev/null || true)"
+  if [ -n "$health_json" ]; then
+    log "Readiness JSON: ${health_json}"
+  else
+    warn "Application readiness endpoint did not respond."
+  fi
+}
+
+cmd_health() {
+  [ -f "$ENV_FILE" ] || err "Missing ${ENV_FILE}."
+  log "Validating environment configuration..."
+  validate_env_inside_container
+
+  local db_mode
+  db_mode="$(get_env_val DB_MODE bundled)"
+  if [ "$db_mode" != "external" ]; then
+    wait_postgres_healthy
+  fi
+
+  log "Checking application HTTP readiness..."
+  local resp
+  resp="$(compose exec -T app wget -qO- http://127.0.0.1:3000/api/health/ready)" || err "App health check failed."
+  printf '%s\n' "$resp"
+
+  log "Checking RAG background worker heartbeat..."
+  compose exec -T worker node -e "const fs=require('fs');const ts=Number(fs.readFileSync('/tmp/supportdesk-worker-heartbeat','utf8'));if(!ts||Date.now()-ts>45000)process.exit(1);console.log('[worker] Heartbeat OK');" \
+    || err "Worker heartbeat check failed."
+
+  local domain
+  domain="$(get_env_val DOMAIN_NAME localhost)"
+  if [ "$domain" != "localhost" ]; then
+    log "Checking HTTPS reverse proxy reachability for ${domain}..."
+    if curl -fsSkI --max-time 8 "https://${domain}/api/health" >/dev/null 2>&1; then
+      ok "HTTPS endpoint https://${domain}/api/health is reachable."
+    else
+      warn "Could not reach https://${domain}/api/health from this host (check firewall/DNS if external)."
+    fi
+  fi
+  ok "All health checks passed."
+}
+
+cmd_logs() {
+  [ -f "$ENV_FILE" ] || err "Missing ${ENV_FILE}."
+  local svc="${1:-app}"
+  case "$svc" in
+    db) svc="postgres" ;;
+    all) compose logs -f --tail=150; return 0 ;;
+  esac
+  compose logs -f --tail=150 "$svc"
+}
+
+cmd_start() {
+  [ -f "$ENV_FILE" ] || err "Missing ${ENV_FILE}."
+  ensure_dirs_and_permissions
+  compose up -d
+  wait_app_healthy
+  ok "All services started."
+}
+
+cmd_stop() {
+  [ -f "$ENV_FILE" ] || err "Missing ${ENV_FILE}."
+  compose stop
+  ok "Services stopped safely."
+}
+
+cmd_restart() {
+  [ -f "$ENV_FILE" ] || err "Missing ${ENV_FILE}."
+  local svc="${1:-}"
+  if [ -n "$svc" ]; then
+    [ "$svc" = "db" ] && svc="postgres"
+    compose restart "$svc"
+    if [ "$svc" = "app" ]; then
+      wait_app_healthy
+    fi
+  else
+    compose restart
+    wait_app_healthy
+  fi
+  ok "Restart completed."
+}
+
+cmd_config() {
+  [ -f "$ENV_FILE" ] || err "Missing ${ENV_FILE}. Run 'supportdesk install' first."
+  cat <<EOF
+Current Configuration Summary (${ENV_FILE}):
+  APP_URL         = $(get_env_val APP_URL)
+  DOMAIN_NAME     = $(get_env_val DOMAIN_NAME)
+  APP_VERSION     = $(current_version)
+  APP_IMAGE       = $(get_env_val APP_IMAGE)
+  TZ              = $(get_env_val TZ Asia/Tehran)
+  DB_MODE         = $(get_env_val DB_MODE bundled)
+  SQL_HOST        = $(get_env_val SQL_HOST postgres)
+  MAX_UPLOAD_MB   = $(get_env_val MAX_UPLOAD_MB 25)
+  SUPERADMIN_USER = $(get_env_val SUPERADMIN_USERNAME superadmin)
+  AI_BASE_URL     = $(get_env_val AI_BASE_URL "(not set)")
+  AI_CHAT_MODEL   = $(get_env_val AI_CHAT_MODEL "(not set)")
+  OTP_PROVIDER    = $(get_env_val OTP_PROVIDER disabled)
+  SMTP_HOST       = $(get_env_val SMTP_HOST "(not set)")
+  STORAGE_DRIVER  = $(get_env_val STORAGE_DRIVER local)
 EOF
+
+  if [ ! -t 0 ] && [ ! -r /dev/tty ]; then
+    return 0
+  fi
+
+  local choice=""
+  printf '\nSelect setting group to update:\n'
+  printf '  1) Domain, APP_URL, Timezone, Max Upload & ACME Email\n'
+  printf '  2) AI Provider Settings (Base URL, API Key, Chat & Embedding Models)\n'
+  printf '  3) Optional Integrations (SMTP / SMS Webhook / S3)\n'
+  printf '  4) Super Admin Credentials (Username, Email, Display Name & Password)\n'
+  printf '  5) Validate .env only\n'
+  printf '  0) Exit\n'
+  printf 'Choice [0]: '
+  read -r choice </dev/tty || choice="0"
+
+  case "${choice:-0}" in
+    1)
+      local d tz email url max_mb
+      printf 'Domain [%s]: ' "$(get_env_val DOMAIN_NAME localhost)"
+      read -r d </dev/tty
+      [ -n "$d" ] && set_env_val DOMAIN_NAME "$d"
+      local cur_domain
+      cur_domain="$(get_env_val DOMAIN_NAME localhost)"
+      local def_url="https://${cur_domain}"
+      [ "$cur_domain" = "localhost" ] && def_url="http://localhost:3000"
+      printf 'APP_URL [%s]: ' "$(get_env_val APP_URL "$def_url")"
+      read -r url </dev/tty
+      [ -n "$url" ] && set_env_val APP_URL "$url"
+      printf 'Timezone [%s]: ' "$(get_env_val TZ Asia/Tehran)"
+      read -r tz </dev/tty
+      [ -n "$tz" ] && set_env_val TZ "$tz"
+      printf 'Max Upload Size MB [%s]: ' "$(get_env_val MAX_UPLOAD_MB 25)"
+      read -r max_mb </dev/tty
+      [ -n "$max_mb" ] && set_env_val MAX_UPLOAD_MB "$max_mb"
+      printf 'ACME Email [%s]: ' "$(get_env_val ACME_EMAIL "")"
+      read -r email </dev/tty
+      [ -n "$email" ] && set_env_val ACME_EMAIL "$email"
+      ;;
+    2)
+      local base_url api_key chat_model emb_model
+      printf 'AI API Base URL (blank for Gemini native) [%s]: ' "$(get_env_val AI_BASE_URL "")"
+      read -r base_url </dev/tty
+      [ -n "$base_url" ] && set_env_val AI_BASE_URL "$base_url"
+      printf 'AI API Key (leave blank to keep current): '
+      read -rs api_key </dev/tty
+      printf '\n'
+      if [ -n "$api_key" ]; then
+        if [ -z "$(get_env_val AI_BASE_URL "")" ]; then
+          set_env_val GEMINI_API_KEY "$api_key"
+        else
+          set_env_val AI_API_KEY "$api_key"
+        fi
+      fi
+      printf 'Chat Model [%s]: ' "$(get_env_val AI_CHAT_MODEL "gemini-4-hydrogen")"
+      read -r chat_model </dev/tty
+      [ -n "$chat_model" ] && set_env_val AI_CHAT_MODEL "$chat_model"
+      printf 'Embedding Model [%s]: ' "$(get_env_val AI_EMBEDDING_MODEL "")"
+      read -r emb_model </dev/tty
+      [ -n "$emb_model" ] && set_env_val AI_EMBEDDING_MODEL "$emb_model"
+      ;;
+    3)
+      local smtp_host smtp_port smtp_user smtp_pass smtp_from otp_mode sms_url sms_key
+      printf 'SMTP Host [%s]: ' "$(get_env_val SMTP_HOST "")"
+      read -r smtp_host </dev/tty
+      [ -n "$smtp_host" ] && set_env_val SMTP_HOST "$smtp_host"
+      printf 'SMTP Port [%s]: ' "$(get_env_val SMTP_PORT 587)"
+      read -r smtp_port </dev/tty
+      [ -n "$smtp_port" ] && set_env_val SMTP_PORT "$smtp_port"
+      printf 'SMTP User [%s]: ' "$(get_env_val SMTP_USER "")"
+      read -r smtp_user </dev/tty
+      [ -n "$smtp_user" ] && set_env_val SMTP_USER "$smtp_user"
+      printf 'SMTP Password (leave blank to keep): '
+      read -rs smtp_pass </dev/tty
+      printf '\n'
+      [ -n "$smtp_pass" ] && set_env_val SMTP_PASSWORD "$smtp_pass"
+      printf 'SMTP From [%s]: ' "$(get_env_val SMTP_FROM "")"
+      read -r smtp_from </dev/tty
+      [ -n "$smtp_from" ] && set_env_val SMTP_FROM "$smtp_from"
+      printf 'OTP Provider (disabled|sms_webhook) [%s]: ' "$(get_env_val OTP_PROVIDER disabled)"
+      read -r otp_mode </dev/tty
+      [ -n "$otp_mode" ] && set_env_val OTP_PROVIDER "$otp_mode"
+      if [ "$(get_env_val OTP_PROVIDER disabled)" = "sms_webhook" ]; then
+        printf 'SMS Webhook URL [%s]: ' "$(get_env_val OTP_SMS_WEBHOOK_URL "")"
+        read -r sms_url </dev/tty
+        [ -n "$sms_url" ] && set_env_val OTP_SMS_WEBHOOK_URL "$sms_url"
+        printf 'SMS API Key (leave blank to keep): '
+        read -rs sms_key </dev/tty
+        printf '\n'
+        [ -n "$sms_key" ] && set_env_val OTP_SMS_API_KEY "$sms_key"
+      fi
+      ;;
+    4)
+      cmd_admin update --username "$(get_env_val SUPERADMIN_USERNAME superadmin)"
+      return 0
+      ;;
+    5)
+      validate_env_inside_container
+      return 0
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+
+  validate_env_inside_container
+  log "Applying configuration changes by restarting services..."
+  compose up -d
+  wait_app_healthy
+  if [ "$choice" = "2" ]; then
+    compose exec -T app node ./node_modules/tsx/dist/cli.mjs ./scripts/admin-cli.ts ai-sync --overwrite || true
+  fi
+  ok "Configuration updated and verified."
+}
+
+# ==============================================================================
+# Installation, Reinstall, Repair, Destructive Reset
+# ==============================================================================
+
+cmd_install() {
+  if [ "${1:-}" != "--non-interactive" ] && [ -f "${ROOT_DIR}/install.sh" ]; then
+    exec bash "${ROOT_DIR}/install.sh" --local --dir "$ROOT_DIR" "$@"
+  fi
+
+  require_cmd docker
+  require_cmd openssl
+  docker compose version >/dev/null 2>&1 || err "Docker Compose v2 is required."
+  ensure_dirs_and_permissions
+
+  if [ ! -f "$ENV_FILE" ]; then
+    log "Generating ${ENV_FILE} with secure random secrets..."
+    cp "${ROOT_DIR}/.env.example" "$ENV_FILE"
+    chmod 600 "$ENV_FILE"
+    local app_db_pw admin_db_pw sup_pw
+    app_db_pw="$(generate_hex)"
+    admin_db_pw="$(generate_hex)"
+    sup_pw="$(generate_password)"
+    set_env_val SQL_PASSWORD "$app_db_pw"
+    set_env_val SQL_ADMIN_PASSWORD "$admin_db_pw"
+    set_env_val POSTGRES_PASSWORD "$admin_db_pw"
+    set_env_val BETTER_AUTH_SECRET "$(generate_hex)"
+    set_env_val APP_ENCRYPTION_KEY "$(generate_hex)"
+    set_env_val APP_HMAC_KEY "$(generate_hex)"
+    set_env_val SUPERADMIN_PASSWORD "$sup_pw"
+    set_env_val APP_VERSION "$(current_version)"
+  fi
+
+  local db_mode
+  db_mode="$(get_env_val DB_MODE bundled)"
+  if [ "$db_mode" != "external" ]; then
+    compose up -d postgres
+    wait_postgres_healthy
+  fi
+
+  if compose build app 2>/dev/null; then
+    ok "Built local application image."
+  else
+    compose pull app worker
+  fi
+
+  validate_env_inside_container
+  compose up -d app worker proxy
+  wait_app_healthy
+  compose exec -T app node ./node_modules/tsx/dist/cli.mjs ./scripts/admin-cli.ts ai-sync || true
+  ok "Installation completed cleanly."
+}
+
+cmd_repair() {
+  require_cmd docker
+  [ -f "$ENV_FILE" ] || err "Missing ${ENV_FILE}."
+  log "Running non-destructive deployment diagnosis and repair..."
+  ensure_dirs_and_permissions
+
+  log "1/5 Validating Docker Compose configuration..."
+  compose config -q || err "Compose configuration is invalid."
+
+  log "2/5 Fixing ownership/permissions on persistent storage and config..."
+  chmod 600 "$ENV_FILE"
+  chmod 700 "$BACKUP_DIR"
+
+  log "3/5 Validating environment configuration..."
+  validate_env_inside_container
+
+  log "4/5 Ensuring required database, app, worker, and proxy services are running..."
+  local db_mode
+  db_mode="$(get_env_val DB_MODE bundled)"
+  if [ "$db_mode" != "external" ]; then
+    compose up -d postgres
+    wait_postgres_healthy
+  fi
+  compose up -d --remove-orphans app worker proxy
+
+  log "5/5 Verifying migrations and readiness health..."
+  compose exec -T app node ./node_modules/tsx/dist/cli.mjs ./scripts/migrate.ts
+  wait_app_healthy
+  ok "Repair completed cleanly without modifying or deleting application data."
+}
+
+cmd_reinstall() {
+  local target_version=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --version) target_version="${2:-}"; shift 2 ;;
+      *) err "Unknown option for reinstall: $1" ;;
+    esac
+  done
+
+  [ -f "$ENV_FILE" ] || err "Missing ${ENV_FILE}. Run 'supportdesk install' first."
+  if [ -n "$target_version" ]; then
+    [ "$target_version" != "latest" ] || err "Refusing 'latest' tag. Specify an explicit version."
+    set_env_val APP_VERSION "$target_version"
+  fi
+
+  local ver
+  ver="$(current_version)"
+  log "Reinstalling application & worker containers (version ${ver}) while preserving ALL database, ticket, file, and KB data..."
+  ensure_dirs_and_permissions
+  validate_env_inside_container
+
+  if [ -f "${ROOT_DIR}/Dockerfile" ]; then
+    compose build --pull app
+  else
+    compose pull app worker
+  fi
+
+  local db_mode
+  db_mode="$(get_env_val DB_MODE bundled)"
+  if [ "$db_mode" != "external" ]; then
+    compose up -d postgres
+    wait_postgres_healthy
+  fi
+
+  compose up -d --force-recreate --no-deps app worker
+  compose up -d proxy
+  wait_app_healthy
+  ok "Reinstall completed. All persistent volumes, database records, and uploaded files were preserved."
+}
+
+cmd_reset() {
+  local destroy_flag="${1:-}"
+  [ "$destroy_flag" = "--destroy-data" ] || err "Refusing reset. Destructive data wipe requires explicit: supportdesk reset --destroy-data"
+  [ -f "$ENV_FILE" ] || err "Missing ${ENV_FILE}."
+
+  warn "================= DESTRUCTIVE RESET WARNING ================="
+  warn "This operation will PERMANENTLY DELETE:"
+  warn "  - PostgreSQL volume (pg_data) and ALL users, tickets, messages, KB & AI settings"
+  warn "  - Persistent storage volume (storage_data) and host data (${STORAGE_DIR})"
+  warn "  - Caddy TLS certificates volume (caddy_data)"
+  warn "Recommendation: Run 'supportdesk backup --all' before proceeding."
+  warn "============================================================="
+
+  printf 'Type exactly "DESTROY ALL DATA" to confirm: '
+  local confirm=""
+  read -r confirm </dev/tty || err "Aborted (no interactive confirmation)."
+  [ "$confirm" = "DESTROY ALL DATA" ] || err "Confirmation phrase mismatch; reset aborted."
+
+  compose down -v --remove-orphans
+  rm -rf "${STORAGE_DIR:?}/"*
+  ok "All containers, persistent volumes, and storage files have been destroyed."
+}
+
+# ==============================================================================
+# Backup & Restore System
+# ==============================================================================
+
+cmd_backup() {
+  [ -f "$ENV_FILE" ] || err "Missing ${ENV_FILE}."
+  ensure_dirs_and_permissions
+
+  local mode="all"
+  case "${1:-}" in
+    list) shift; cmd_backup_list "$@"; return 0 ;;
+    prune) shift; cmd_backup_prune "$@"; return 0 ;;
+    --all|"") mode="all" ;;
+    --database) mode="database" ;;
+    --files) mode="files" ;;
+    *) err "Usage: supportdesk backup [--all|--database|--files | list | prune --keep N]" ;;
+  esac
+
+  local stamp work_dir bundle_path sha_path app_ver pg_ver domain_name
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  work_dir="$(mktemp -d "${BACKUP_DIR}/.tmp_${stamp}_XXXXXX")"
+  chmod 700 "$work_dir"
+  bundle_path="${BACKUP_DIR}/supportdesk_backup_${stamp}_${mode}.tar.gz"
+  sha_path="${bundle_path}.sha256"
+  app_ver="$(current_version)"
+  domain_name="$(get_env_val DOMAIN_NAME localhost)"
+  pg_ver="external"
+
+  trap 'rm -rf "$work_dir"; trap - RETURN' RETURN
+
+  local db_sha="" storage_sha=""
+  if [ "$mode" = "all" ] || [ "$mode" = "database" ]; then
+    local sql_host sql_port sql_db pg_user pg_pass db_mode
+    db_mode="$(get_env_val DB_MODE bundled)"
+    sql_db="$(get_env_val SQL_DB_NAME supportdesk)"
+    if [ "$db_mode" = "external" ]; then
+      sql_host="$(get_env_val SQL_HOST)"
+      sql_port="$(get_env_val SQL_PORT 5432)"
+      pg_user="$(get_env_val SQL_ADMIN_USER "$(get_env_val SQL_USER)")"
+      pg_pass="$(get_env_val SQL_ADMIN_PASSWORD "$(get_env_val SQL_PASSWORD)")"
+      log "Dumping external PostgreSQL database (${sql_host})..."
+      compose exec -T -e PGPASSWORD="$pg_pass" app pg_dump \
+        --clean --if-exists --no-owner --no-privileges \
+        -h "$sql_host" -p "$sql_port" -U "$pg_user" "$sql_db" | gzip -9 > "${work_dir}/db.sql.gz"
+    else
+      pg_user="$(get_env_val POSTGRES_USER supportdesk_admin)"
+      pg_db="$(get_env_val POSTGRES_DB supportdesk)"
+      pg_ver="$(compose exec -T postgres psql -U "$pg_user" -d "$pg_db" -tAc "SHOW server_version;" 2>/dev/null | tr -d '[:space:]' || echo "16")"
+      log "Dumping bundled PostgreSQL database..."
+      compose exec -T postgres pg_dump \
+        --clean --if-exists --no-owner --no-privileges \
+        -U "$pg_user" "$pg_db" | gzip -9 > "${work_dir}/db.sql.gz"
+    fi
+    gzip -t "${work_dir}/db.sql.gz" || err "PostgreSQL dump compression verification failed."
+    db_sha="$(sha256sum "${work_dir}/db.sql.gz" | awk '{print $1}')"
+  fi
+
+  if [ "$mode" = "all" ] || [ "$mode" = "files" ]; then
+    log "Archiving persistent storage (attachments, Shared File Hub, Knowledge Base documents)..."
+    if [ -n "$(compose ps -q app 2>/dev/null || true)" ]; then
+      compose exec -T app tar -czf - -C /var/lib/supportdesk/storage . > "${work_dir}/storage.tar.gz"
+    else
+      tar -czf "${work_dir}/storage.tar.gz" -C "$STORAGE_DIR" .
+    fi
+    tar -tzf "${work_dir}/storage.tar.gz" >/dev/null || err "Storage archive verification failed."
+    storage_sha="$(sha256sum "${work_dir}/storage.tar.gz" | awk '{print $1}')"
+  fi
+
+  # Sanitized configuration metadata (NO plaintext secrets)
+  cat > "${work_dir}/config-metadata.json" <<EOF
+{
+  "appVersion": "${app_ver}",
+  "domainName": "${domain_name}",
+  "tz": "$(get_env_val TZ Asia/Tehran)",
+  "dbMode": "$(get_env_val DB_MODE bundled)",
+  "storageDriver": "$(get_env_val STORAGE_DRIVER local)",
+  "maxUploadMb": $(get_env_val MAX_UPLOAD_MB 25)
+}
+EOF
+
+  cat > "${work_dir}/manifest.json" <<EOF
+{
+  "formatVersion": 1,
+  "createdAtUtc": "${stamp}",
+  "mode": "${mode}",
+  "appVersion": "${app_ver}",
+  "postgresVersion": "${pg_ver}",
+  "files": {
+    "db": { "included": $([ -n "$db_sha" ] && echo true || echo false), "sha256": "${db_sha}" },
+    "storage": { "included": $([ -n "$storage_sha" ] && echo true || echo false), "sha256": "${storage_sha}" }
+  }
+}
+EOF
+
+  tar -czf "$bundle_path" -C "$work_dir" .
+  chmod 600 "$bundle_path"
+  tar -tzf "$bundle_path" >/dev/null || err "Final backup bundle verification failed."
+  (cd "$BACKUP_DIR" && sha256sum "$(basename "$bundle_path")" > "$sha_path")
+  chmod 600 "$sha_path"
+  (cd "$BACKUP_DIR" && sha256sum -c "$(basename "$sha_path")" >/dev/null) || err "Backup SHA256 verification failed."
+
+  local size_human
+  size_human="$(du -h "$bundle_path" | awk '{print $1}')"
+  ok "Backup created & verified: ${bundle_path} (${size_human})"
+  cmd_backup_prune --keep "$(get_env_val BACKUP_RETENTION_COUNT 14)" >/dev/null 2>&1 || true
+}
+
+cmd_backup_list() {
+  ensure_dirs_and_permissions
+  local found=0
+  printf 'BACKUP FILE\tSIZE\tMODIFIED\tCHECKSUM\n'
+  while IFS= read -r f; do
+    found=1
+    local sz mtime cstatus="missing"
+    sz="$(du -h "$f" | awk '{print $1}')"
+    mtime="$(date -r "$f" -u '+%Y-%m-%d %H:%M:%S UTC' 2>/dev/null || stat -c '%y' "$f")"
+    if [ -f "${f}.sha256" ] && (cd "$(dirname "$f")" && sha256sum -c "$(basename "${f}.sha256")" >/dev/null 2>&1); then
+      cstatus="verified"
+    elif [ -f "${f}.sha256" ]; then
+      cstatus="FAILED"
+    fi
+    printf '%s\t%s\t%s\t%s\n' "$f" "$sz" "$mtime" "$cstatus"
+  done < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'supportdesk_backup_*.tar.gz' | sort -r)
+
+  if [ "$found" -eq 0 ]; then
+    log "No backup bundles found in ${BACKUP_DIR}."
+  fi
+}
+
+cmd_backup_prune() {
+  local keep
+  keep="$(get_env_val BACKUP_RETENTION_COUNT 14)"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --keep) keep="${2:-14}"; shift 2 ;;
+      *) err "Unknown prune option: $1" ;;
+    esac
+  done
+  [[ "$keep" =~ ^[0-9]+$ ]] && [ "$keep" -ge 1 ] || err "--keep must be a positive integer."
+
+  local count=0 removed=0
+  while IFS= read -r f; do
+    count=$((count + 1))
+    if [ "$count" -gt "$keep" ]; then
+      rm -f "$f" "${f}.sha256"
+      removed=$((removed + 1))
+    fi
+  done < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'supportdesk_backup_*.tar.gz' | sort -r)
+  log "Retention policy applied (keep=${keep}, pruned=${removed})."
+}
+
+cmd_restore() {
+  [ -f "$ENV_FILE" ] || err "Missing ${ENV_FILE}."
+  local archive=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --file) archive="${2:-}"; shift 2 ;;
+      *) archive="$1"; shift ;;
+    esac
+  done
+
+  if [ -z "$archive" ]; then
+    cmd_backup_list
+    printf '\nEnter full path to backup bundle (.tar.gz): '
+    read -r archive </dev/tty || err "No backup file specified."
+  fi
+  [ -f "$archive" ] || err "Backup bundle not found: ${archive}"
+
+  if [ -f "${archive}.sha256" ]; then
+    log "Verifying backup bundle SHA256 checksum..."
+    (cd "$(dirname "$archive")" && sha256sum -c "$(basename "${archive}.sha256")" >/dev/null) \
+      || err "Checksum verification failed for ${archive}!"
+    ok "Checksum verified."
+  else
+    warn "No sidecar .sha256 file found alongside ${archive}; checking tar integrity only."
+  fi
+
+  tar -tzf "$archive" >/dev/null || err "Corrupt tar.gz backup archive: ${archive}"
+
+  local work_dir
+  work_dir="$(mktemp -d "${BACKUP_DIR}/.restore_XXXXXX")"
+  chmod 700 "$work_dir"
+  trap 'rm -rf "$work_dir"; trap - RETURN' RETURN
+  tar -xzf "$archive" -C "$work_dir"
+
+  [ -f "${work_dir}/manifest.json" ] || err "Invalid backup bundle: missing manifest.json."
+  log "Backup manifest:"
+  cat "${work_dir}/manifest.json"
+  printf '\nRestore target domain: %s (app version %s)\n' "$(get_env_val DOMAIN_NAME localhost)" "$(current_version)"
+  warn "WARNING: Restoring this backup will OVERWRITE current database tables and/or stored files."
+  printf 'Type RESTORE to confirm: '
+  local confirm=""
+  read -r confirm </dev/tty || err "Restore aborted."
+  [ "$confirm" = "RESTORE" ] || err "Restore aborted by administrator."
+
+  if [ -f "${work_dir}/db.sql.gz" ]; then
+    gzip -t "${work_dir}/db.sql.gz" || err "Corrupt db.sql.gz inside bundle."
+  fi
+  if [ -f "${work_dir}/storage.tar.gz" ]; then
+    tar -tzf "${work_dir}/storage.tar.gz" >/dev/null || err "Corrupt storage.tar.gz inside bundle."
+  fi
+
+  log "Stopping app and worker before restoring..."
+  compose stop app worker || true
+
+  if [ -f "${work_dir}/db.sql.gz" ]; then
+    local db_mode sql_db
+    db_mode="$(get_env_val DB_MODE bundled)"
+    sql_db="$(get_env_val SQL_DB_NAME supportdesk)"
+    if [ "$db_mode" = "external" ]; then
+      local sql_host sql_port pg_user pg_pass
+      sql_host="$(get_env_val SQL_HOST)"
+      sql_port="$(get_env_val SQL_PORT 5432)"
+      pg_user="$(get_env_val SQL_ADMIN_USER "$(get_env_val SQL_USER)")"
+      pg_pass="$(get_env_val SQL_ADMIN_PASSWORD "$(get_env_val SQL_PASSWORD)")"
+      log "Restoring external PostgreSQL database..."
+      gunzip -c "${work_dir}/db.sql.gz" | compose run --rm --no-deps -T -e PGPASSWORD="$pg_pass" -e VALIDATE_ENV_ON_START=false --entrypoint "" app \
+        psql -v ON_ERROR_STOP=1 -h "$sql_host" -p "$sql_port" -U "$pg_user" -d "$sql_db"
+    else
+      wait_postgres_healthy
+      local pg_user pg_db
+      pg_user="$(get_env_val POSTGRES_USER supportdesk_admin)"
+      pg_db="$(get_env_val POSTGRES_DB supportdesk)"
+      log "Restoring bundled PostgreSQL database..."
+      gunzip -c "${work_dir}/db.sql.gz" | compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "$pg_user" -d "$pg_db"
+    fi
+  fi
+
+  if [ -f "${work_dir}/storage.tar.gz" ]; then
+    log "Restoring persistent storage files..."
+    compose run --rm --no-deps -T -e VALIDATE_ENV_ON_START=false --entrypoint "" app \
+      sh -c 'rm -rf /var/lib/supportdesk/storage/* && tar -xzf - -C /var/lib/supportdesk/storage' < "${work_dir}/storage.tar.gz"
+  fi
+
+  log "Starting restored services and verifying readiness..."
+  compose up -d app worker proxy
+  wait_app_healthy
+  ok "Restore completed and verified cleanly."
+}
+
+# ==============================================================================
+# Versioned Updates & Safe Rollback
+# ==============================================================================
+
+fetch_release_manifest() {
+  local base_url="$1"
+  local version="$2"
+  local out_file="$3"
+  local manifest_url="${base_url%/}/v${version}/release-manifest.json"
+  curl -fsSL "$manifest_url" -o "$out_file" 2>/dev/null || return 1
+}
+
+cmd_update() {
+  [ -f "$ENV_FILE" ] || err "Missing ${ENV_FILE}."
+  local target_version="" check_only="false" custom_registry=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --version) target_version="${2:-}"; shift 2 ;;
+      --check) check_only="true"; shift ;;
+      --registry) custom_registry="${2:-}"; shift 2 ;;
+      *) target_version="$1"; shift ;;
+    esac
+  done
+
+  local cur_ver release_base
+  cur_ver="$(current_version)"
+  release_base="$(get_env_val RELEASE_BASE_URL "$DEFAULT_RELEASE_BASE")"
+
+  if [ "$check_only" = "true" ]; then
+    log "Currently installed version: ${cur_ver}"
+    local latest_api latest_tag
+    latest_api="$(printf '%s' "$release_base" | sed -E 's|https://github.com/([^/]+/[^/]+)/releases/download|https://api.github.com/repos/\1/releases/latest|')"
+    if [ "$latest_api" != "$release_base" ] && latest_tag="$(curl -fsSL "$latest_api" 2>/dev/null | grep '"tag_name"' | head -n1 | sed -E 's/.*"tag_name": *"v?([^"]+)".*/\1/')"; then
+      log "Latest published release: ${latest_tag}"
+      if [ "$latest_tag" = "$cur_ver" ]; then
+        ok "System is up to date (${cur_ver})."
+      else
+        log "Upgrade available: ${cur_ver} -> ${latest_tag} (run: supportdesk update --version ${latest_tag})"
+      fi
+    else
+      warn "Could not query remote release index (${release_base}). Specify --version X.Y.Z manually."
+    fi
+    return 0
+  fi
+
+  [ -n "$target_version" ] || err "Explicit version required: supportdesk update --version X.Y.Z (never 'latest')."
+  [ "$target_version" != "latest" ] || err "Refusing to deploy 'latest' tag. Specify a pinned semantic version."
+
+  if [ "$cur_ver" = "$target_version" ]; then
+    ok "Already running version ${target_version}. Use 'supportdesk reinstall' to recreate containers."
+    return 0
+  fi
+
+  if [ -n "$custom_registry" ]; then
+    local img_name
+    img_name="$(get_env_val APP_IMAGE | awk -F/ '{print $NF}')"
+    set_env_val APP_IMAGE "${custom_registry%/}/${img_name}"
+  fi
+
+  local tmp_stage tarball_name
+  tmp_stage="$(mktemp -d)"
+  trap 'rm -rf "$tmp_stage"; trap - RETURN' RETURN
+  tarball_name="supportdesk-v${target_version}.tar.gz"
+
+  if fetch_release_manifest "$release_base" "$target_version" "${tmp_stage}/release-manifest.json"; then
+    log "Verified release manifest for v${target_version}."
+    if curl -fsSL "${release_base%/}/v${target_version}/SHA256SUMS" -o "${tmp_stage}/SHA256SUMS" 2>/dev/null; then
+      if grep -q "release-manifest.json" "${tmp_stage}/SHA256SUMS"; then
+        (cd "$tmp_stage" && grep "release-manifest.json" SHA256SUMS | sha256sum -c - >/dev/null 2>&1) \
+          || err "Release manifest SHA256 verification failed!"
+        ok "Release manifest checksum verified."
+      fi
+      if curl -fsSL "${release_base%/}/v${target_version}/${tarball_name}" -o "${tmp_stage}/${tarball_name}" 2>/dev/null; then
+        (cd "$tmp_stage" && grep -E "[[:space:]](\./)?${tarball_name}$" SHA256SUMS | sha256sum -c - >/dev/null 2>&1) \
+          || err "Release bundle ${tarball_name} SHA256 verification failed!"
+        ok "Release bundle checksum verified."
+      fi
+    fi
+  else
+    warn "Remote release manifest unavailable at ${release_base%/}/v${target_version}; proceeding with configured image registry."
+  fi
+
+  log "Step 1/5 Creating pre-update backup..."
+  cmd_backup --all
+  local pre_backup
+  pre_backup="$(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'supportdesk_backup_*.tar.gz' | sort -r | head -n1)"
+
+  log "Step 2/5 Updating pinned version ${cur_ver} -> ${target_version}..."
+  if [ -f "${tmp_stage}/${tarball_name}" ]; then
+    tar -xzf "${tmp_stage}/${tarball_name}" -C "$ROOT_DIR" --exclude='.env' --exclude='data' --exclude='backups'
+    chmod +x "${ROOT_DIR}/bin/supportdesk" "${ROOT_DIR}/docker/"*.sh 2>/dev/null || true
+    ok "Updated Compose/CLI/migration definitions from verified bundle."
+  fi
+  set_env_val APP_VERSION "$target_version"
+
+  log "Step 3/5 Pulling/building versioned images & validating Compose..."
+  compose config -q || err "Compose configuration invalid."
+  if ! compose pull app worker; then
+    warn "Registry pull failed; attempting local source build..."
+    compose build app || {
+      set_env_val APP_VERSION "$cur_ver"
+      err "Failed to acquire image for v${target_version}. Reverted APP_VERSION to ${cur_ver}."
+    }
+  fi
+
+  log "Step 4/5 Starting PostgreSQL, migrating schema, and restarting services..."
+  local db_mode
+  db_mode="$(get_env_val DB_MODE bundled)"
+  if [ "$db_mode" != "external" ]; then
+    compose up -d postgres
+    wait_postgres_healthy
+  fi
+
+  if ! compose up -d --no-deps app worker; then
+    warn "Container startup failed! Attempting application rollback to v${cur_ver}..."
+    set_env_val APP_VERSION "$cur_ver"
+    if compose up -d --no-deps app worker && wait_app_healthy 30; then
+      err "Update to v${target_version} failed; rolled back application to v${cur_ver}. Inspect logs and check ${pre_backup}."
+    else
+      err "Update AND automatic rollback failed. Preserve logs and recover using: supportdesk restore --file ${pre_backup}"
+    fi
+  fi
+
+  if ! wait_app_healthy 45; then
+    warn "New version v${target_version} failed readiness health check! Rolling back to v${cur_ver}..."
+    set_env_val APP_VERSION "$cur_ver"
+    if compose up -d --no-deps app worker && wait_app_healthy 30; then
+      err "Update failed health check and rolled back to v${cur_ver}. If database migrations ran, restore pre-update backup: supportdesk restore --file ${pre_backup}"
+    else
+      err "Update AND rollback failed health check. Recover via: supportdesk restore --file ${pre_backup}"
+    fi
+  fi
+
+  compose up -d proxy
+  ok "Successfully upgraded SupportDesk from ${cur_ver} to ${target_version}."
+}
+
+# ==============================================================================
+# Administrator Management
+# ==============================================================================
+
+run_admin_cli() {
+  [ -f "$ENV_FILE" ] || err "Missing ${ENV_FILE}."
+  if [ -n "$(compose ps -q app 2>/dev/null || true)" ]; then
+    compose exec -T app node ./node_modules/tsx/dist/cli.mjs ./scripts/admin-cli.ts "$@"
+  else
+    compose run --rm --no-deps -T -e VALIDATE_ENV_ON_START=false --entrypoint "" app \
+      node ./node_modules/tsx/dist/cli.mjs ./scripts/admin-cli.ts "$@"
+  fi
+}
+
+cmd_admin() {
+  local sub="${1:-help}"
+  shift || true
+  case "$sub" in
+    list)
+      run_admin_cli list "$@"
+      ;;
+    create)
+      local uname="" uemail="" uname_fa="" urole="super_admin" pw1="" pw2="" gen_pw="false"
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --username) uname="${2:-}"; shift 2 ;;
+          --email) uemail="${2:-}"; shift 2 ;;
+          --name) uname_fa="${2:-}"; shift 2 ;;
+          --role) urole="${2:-super_admin}"; shift 2 ;;
+          --generate-password) gen_pw="true"; shift ;;
+          *) err "Unknown admin create option: $1" ;;
+        esac
+      done
+      if [ -z "$uname" ]; then
+        printf 'Username (lowercase): '
+        read -r uname </dev/tty
+      fi
+      if [ -z "$uemail" ]; then
+        printf 'Email: '
+        read -r uemail </dev/tty
+      fi
+      if [ -z "$uname_fa" ]; then
+        printf 'Display Name [%s]: ' "$uname"
+        read -r uname_fa </dev/tty
+        [ -z "$uname_fa" ] && uname_fa="$uname"
+      fi
+      if [ "$gen_pw" = "true" ]; then
+        run_admin_cli create --username "$uname" --email "$uemail" --name "$uname_fa" --role "$urole" --generate-password
+      else
+        printf 'Password (min 10 chars with letter & digit): '
+        read -rs pw1 </dev/tty
+        printf '\nConfirm Password: '
+        read -rs pw2 </dev/tty
+        printf '\n'
+        [ "$pw1" = "$pw2" ] || err "Passwords do not match."
+        printf '%s' "$pw1" | run_admin_cli create --username "$uname" --email "$uemail" --name "$uname_fa" --role "$urole" --password-stdin --must-change-password
+      fi
+      ;;
+    update|edit)
+      local cur_uname="" new_uname="" uemail="" uname_fa="" pw1="" pw2="" gen_pw="false" force_flag=""
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --username) cur_uname="${2:-}"; shift 2 ;;
+          --new-username) new_uname="${2:-}"; shift 2 ;;
+          --email) uemail="${2:-}"; shift 2 ;;
+          --name) uname_fa="${2:-}"; shift 2 ;;
+          --generate-password) gen_pw="true"; shift ;;
+          --force-change) force_flag="--force-change"; shift ;;
+          *) cur_uname="$1"; shift ;;
+        esac
+      done
+      if [ -z "$cur_uname" ]; then
+        printf 'Current username to edit [%s]: ' "$(get_env_val SUPERADMIN_USERNAME superadmin)"
+        read -r cur_uname </dev/tty
+        [ -z "$cur_uname" ] && cur_uname="$(get_env_val SUPERADMIN_USERNAME superadmin)"
+      fi
+      local interactive="true"
+      if [ -n "$new_uname" ] || [ -n "$uemail" ] || [ -n "$uname_fa" ] || [ "$gen_pw" = "true" ]; then
+        interactive="false"
+      fi
+      if [ "$interactive" = "true" ] && [ -r /dev/tty ]; then
+        printf 'New username (leave blank to keep %s): ' "$cur_uname"
+        read -r new_uname </dev/tty
+        printf 'New email (leave blank to keep current): '
+        read -r uemail </dev/tty
+        printf 'New display name (leave blank to keep current): '
+        read -r uname_fa </dev/tty
+        printf 'New password (leave blank to keep current; min 10 chars with letter & digit): '
+        read -rs pw1 </dev/tty
+        printf '\n'
+        if [ -n "$pw1" ]; then
+          printf 'Confirm new password: '
+          read -rs pw2 </dev/tty
+          printf '\n'
+          [ "$pw1" = "$pw2" ] || err "Passwords do not match."
+        fi
+      fi
+      local args=(update --username "$cur_uname")
+      [ -n "$new_uname" ] && args+=(--new-username "$new_uname")
+      [ -n "$uemail" ] && args+=(--email "$uemail")
+      [ -n "$uname_fa" ] && args+=(--name "$uname_fa")
+      [ -n "$force_flag" ] && args+=("$force_flag")
+      if [ "$gen_pw" = "true" ]; then
+        args+=(--generate-password)
+        run_admin_cli "${args[@]}"
+      elif [ -n "$pw1" ]; then
+        args+=(--password-stdin)
+        printf '%s' "$pw1" | run_admin_cli "${args[@]}"
+      else
+        run_admin_cli "${args[@]}"
+      fi
+      # Keep bootstrap metadata in .env synchronized if updating the primary superadmin
+      if [ "$cur_uname" = "$(get_env_val SUPERADMIN_USERNAME superadmin)" ]; then
+        [ -n "$new_uname" ] && set_env_val SUPERADMIN_USERNAME "$new_uname"
+        [ -n "$uemail" ] && set_env_val SUPERADMIN_EMAIL "$uemail"
+        [ -n "$uname_fa" ] && set_env_val SUPERADMIN_NAME "$uname_fa"
+        [ -n "$pw1" ] && set_env_val SUPERADMIN_PASSWORD "$pw1"
+      fi
+      ;;
+    reset-password)
+      local uname="" gen_pw="false" force_flag="" pw1="" pw2=""
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --username) uname="${2:-}"; shift 2 ;;
+          --generate-password) gen_pw="true"; shift ;;
+          --force-change) force_flag="--force-change"; shift ;;
+          *) uname="$1"; shift ;;
+        esac
+      done
+      if [ -z "$uname" ]; then
+        printf 'Username to reset: '
+        read -r uname </dev/tty
+      fi
+      if [ "$gen_pw" = "true" ]; then
+        run_admin_cli reset-password --username "$uname" --generate-password $force_flag
+      else
+        printf 'New Password (min 10 chars with letter & digit): '
+        read -rs pw1 </dev/tty
+        printf '\nConfirm Password: '
+        read -rs pw2 </dev/tty
+        printf '\n'
+        [ "$pw1" = "$pw2" ] || err "Passwords do not match."
+        printf '%s' "$pw1" | run_admin_cli reset-password --username "$uname" --password-stdin $force_flag
+      fi
+      ;;
+    disable)
+      local uname="${1:-}"
+      local extra="${2:-}"
+      if [ "$uname" = "--username" ]; then uname="${2:-}"; extra="${3:-}"; fi
+      if [ -z "$uname" ]; then
+        printf 'Username to disable: '
+        read -r uname </dev/tty
+      fi
+      run_admin_cli disable --username "$uname" $extra
+      ;;
+    enable)
+      local uname="${1:-}"
+      if [ "$uname" = "--username" ]; then uname="${2:-}"; fi
+      if [ -z "$uname" ]; then
+        printf 'Username to enable: '
+        read -r uname </dev/tty
+      fi
+      run_admin_cli enable --username "$uname"
+      ;;
+    force-password-change)
+      local uname="${1:-}"
+      if [ "$uname" = "--username" ]; then uname="${2:-}"; fi
+      if [ -z "$uname" ]; then
+        printf 'Username: '
+        read -r uname </dev/tty
+      fi
+      run_admin_cli force-password-change --username "$uname"
+      ;;
+    *)
+      err "Unknown admin subcommand '$sub'. Run 'supportdesk help'."
+      ;;
+  esac
+}
+
+# ==============================================================================
+# Dispatcher
+# ==============================================================================
+
+CMD="${1:-help}"
+shift || true
+
+case "$CMD" in
+  help|-h|--help) cmd_help ;;
+  version|-v|--version) cmd_version ;;
+  status) cmd_status ;;
+  health) cmd_health ;;
+  logs) cmd_logs "$@" ;;
+  start) cmd_start ;;
+  stop) cmd_stop ;;
+  restart) cmd_restart "$@" ;;
+  config) cmd_config ;;
+  install) cmd_install "$@" ;;
+  repair) cmd_repair ;;
+  reinstall) cmd_reinstall "$@" ;;
+  reset) cmd_reset "$@" ;;
+  update) cmd_update "$@" ;;
+  backup) cmd_backup "$@" ;;
+  restore) cmd_restore "$@" ;;
+  admin) cmd_admin "$@" ;;
+  *)
+    warn "Unknown command: $CMD"
+    cmd_help
     exit 1
     ;;
 esac

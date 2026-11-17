@@ -5,6 +5,8 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   APP_URL: z.string().url().optional().or(z.literal('')),
   APP_VERSION: z.string().min(1).default('0.1.0'),
+  DOMAIN_NAME: z.string().optional(),
+  TZ: z.string().min(1).default('Asia/Tehran'),
   BETTER_AUTH_SECRET: z.string().min(16).optional(),
   APP_ENCRYPTION_KEY: z.string().optional(),
   APP_HMAC_KEY: z.string().optional(),
@@ -15,6 +17,8 @@ const envSchema = z.object({
   STORAGE_DRIVER: z.enum(['local', 's3']).default('local'),
   STORAGE_ROOT: z.string().default('./data/storage'),
   STORAGE_MAX_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024 * 1024),
+  MAX_UPLOAD_MB: z.coerce.number().int().min(1).max(250).default(25),
+  BACKUP_RETENTION_COUNT: z.coerce.number().int().min(1).max(365).default(14),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;
@@ -24,6 +28,8 @@ export function getEnv(): AppEnv {
     NODE_ENV: process.env.NODE_ENV,
     APP_URL: process.env.APP_URL,
     APP_VERSION: process.env.APP_VERSION,
+    DOMAIN_NAME: process.env.DOMAIN_NAME,
+    TZ: process.env.TZ,
     BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET,
     APP_ENCRYPTION_KEY: process.env.APP_ENCRYPTION_KEY,
     APP_HMAC_KEY: process.env.APP_HMAC_KEY,
@@ -34,6 +40,8 @@ export function getEnv(): AppEnv {
     STORAGE_DRIVER: process.env.STORAGE_DRIVER,
     STORAGE_ROOT: process.env.STORAGE_ROOT,
     STORAGE_MAX_BYTES: process.env.STORAGE_MAX_BYTES,
+    MAX_UPLOAD_MB: process.env.MAX_UPLOAD_MB,
+    BACKUP_RETENTION_COUNT: process.env.BACKUP_RETENTION_COUNT,
   });
 }
 
