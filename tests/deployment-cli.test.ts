@@ -139,6 +139,7 @@ describe('Deployment Scripts & Management CLI Tests', () => {
       expect(cliHelp.stdout).toContain('backup [--all|--database|--files]');
       expect(cliHelp.stdout).toContain('restore [--file <archive.tar.gz>]');
       expect(cliHelp.stdout).toContain('reset --destroy-data');
+      expect(cliHelp.stdout).toContain('rollback [--version X.Y.Z]');
       expect(cliHelp.stdout).toContain('admin update');
       expect(cliHelp.stdout).toContain('admin reset-password');
 
@@ -152,7 +153,7 @@ describe('Deployment Scripts & Management CLI Tests', () => {
       expect(instHelp.stdout).toContain('--non-interactive');
     });
 
-    it('refuses latest tag in install.sh/update and refuses reset without --destroy-data', () => {
+    it('refuses latest tag in install.sh/update/rollback and refuses reset without --destroy-data', () => {
       const instLatest = spawnSync(
         'bash',
         [path.join(ROOT_DIR, 'install.sh'), '--version', 'latest'],
@@ -166,6 +167,13 @@ describe('Deployment Scripts & Management CLI Tests', () => {
       });
       expect(cliResetSafe.status).toBe(1);
       expect(cliResetSafe.stderr).toContain('--destroy-data');
+
+      const cliRollbackLatest = spawnSync(
+        path.join(ROOT_DIR, 'bin', 'supportdesk'),
+        ['rollback', '--version', 'latest'],
+        { encoding: 'utf8' }
+      );
+      expect(cliRollbackLatest.status).toBe(1);
     });
 
     it('creates verified checksummed backup bundles, lists checksums, and enforces retention pruning', async () => {

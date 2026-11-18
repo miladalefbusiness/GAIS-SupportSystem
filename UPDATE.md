@@ -43,7 +43,16 @@ supportdesk update --version 0.2.0 --registry registry.example.com/your-org
 
 If container startup or `/api/health/ready` fails on the new version:
 - `supportdesk update` automatically reverts `APP_VERSION` in `.env` to the previous version and restarts the prior `app` and `worker` containers.
-- **Database Schema Note**: Forward Drizzle migrations are not automatically reversed. If a failed release modified PostgreSQL tables incompatibly, restore the pre-update snapshot immediately:
+- On every successful upgrade, `.last-good-version` is saved so you can run a one-command rollback later:
+
+```bash
+supportdesk rollback
+# Or roll back to an explicit version + database/storage snapshot:
+supportdesk rollback --version 0.1.0 --backup /opt/supportdesk/backups/supportdesk_backup_<TIMESTAMP>_all.tar.gz
+```
+
+- **GitHub Release Channel Rollback**: Trigger `.github/workflows/rollback.yml` (`workflow_dispatch`) to demote a faulty release to `prerelease: true` and re-promote the verified known-good release as `latest`.
+- **Database Schema Note**: Forward Drizzle migrations are not automatically reversed. If a failed release modified PostgreSQL tables incompatibly, restore the pre-update snapshot via `supportdesk rollback --backup ...` or:
 
 ```bash
 supportdesk backup list

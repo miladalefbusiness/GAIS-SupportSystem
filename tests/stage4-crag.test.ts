@@ -240,7 +240,7 @@ describe.skipIf(!hasSqlEnv)(
         ipAddress: null,
         userAgent: null,
       });
-      createdDocIds.push(doc1.document.id);
+      createdDocIds.push(doc1.id);
 
       const docSecret = await uploadAndIndexDocument({
         titleFa: 'رمز محرمانه خزانه',
@@ -255,7 +255,7 @@ describe.skipIf(!hasSqlEnv)(
         ipAddress: null,
         userAgent: null,
       });
-      createdDocIds.push(docSecret.document.id);
+      createdDocIds.push(docSecret.id);
     });
 
     afterAll(async () => {

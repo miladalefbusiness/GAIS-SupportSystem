@@ -1,0 +1,108 @@
+name: Production Release Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_version:
+        description: 'Known-good semantic version to roll back to (without v prefix, e.g. 0.1.0)'
+        required: true
+        type: string
+      broken_version:
+        description: 'Optional faulty release version to demote from latest/mark as prerelease (e.g. 0.2.0)'
+        required: false
+        type: string
+      reason:
+        description: 'Rollback reason for audit & release notes'
+        required: true
+        type: string
+
+jobs:
+  rollback-release:
+    name: Verify Target Release & Roll Back Latest Channel
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      packages: read
+
+    steps:
+      - name: Validate rollback inputs & check target release integrity
+        id: verify
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_VER: ${{ inputs.target_version }}
+          BROKEN_VER: ${{ inputs.broken_version }}
+        run: |
+          set -euo pipefail
+          if [ "$TARGET_VER" = "latest" ] || ! printf '%s' "$TARGET_VER" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "Invalid target_version '$TARGET_VER'" >&2
+            exit 1
+          fi
+          if [ -n "$BROKEN_VER" ] && [ "$BROKEN_VER" = "$TARGET_VER" ]; then
+            echo "broken_version and target_version cannot be identical" >&2
+            exit 1
+          fi
+
+          # Verify target GitHub release & assets exist before altering latest
+          TARGET_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/v${TARGET_VER}")"
+          TARGET_ID="$(printf '%s' "$TARGET_JSON" | jq -r '.id')"
+          HAS_TARBALL="$(printf '%s' "$TARGET_JSON" | jq -r --arg n "supportdesk-v${TARGET_VER}.tar.gz" '[.assets[].name] | index($n) != null')"
+          HAS_SUMS="$(printf '%s' "$TARGET_JSON" | jq -r '[.assets[].name] | index("SHA256SUMS") != null')"
+          if [ -z "$TARGET_ID" ] || [ "$TARGET_ID" = "null" ] || [ "$HAS_TARBALL" != "true" ] || [ "$HAS_SUMS" != "true" ]; then
+            echo "Target release v${TARGET_VER} is missing required verified assets!" >&2
+            exit 1
+          fi
+          echo "target_id=${TARGET_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Demote broken release (if specified)
+        if: inputs.broken_version != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BROKEN_VER: ${{ inputs.broken_version }}
+          TARGET_VER: ${{ inputs.target_version }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          set -euo pipefail
+          BROKEN_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/v${BROKEN_VER}" || true)"
+          BROKEN_ID="$(printf '%s' "$BROKEN_JSON" | jq -r '.id // empty')"
+          if [ -n "$BROKEN_ID" ]; then
+            OLD_BODY="$(printf '%s' "$BROKEN_JSON" | jq -r '.body // ""')"
+            NEW_BODY="> **[ROLLED BACK -> v${TARGET_VER}]** $(date -u +%Y-%m-%dT%H:%M:%SZ) — ${REASON}
+
+          ${OLD_BODY}"
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${BROKEN_ID}" \
+              -f tag_name="v${BROKEN_VER}" \
+              -f name="[ROLLED BACK] SupportDesk v${BROKEN_VER}" \
+              -F prerelease=true \
+              -f body="$NEW_BODY" >/dev/null
+            echo "Demoted v${BROKEN_VER} to prerelease (removed from /releases/latest)."
+          else
+            echo "No published GitHub release found for v${BROKEN_VER}; skipping demotion."
+          fi
+
+      - name: Promote verified target release as latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_ID: ${{ steps.verify.outputs.target_id }}
+          TARGET_VER: ${{ inputs.target_version }}
+        run: |
+          set -euo pipefail
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${TARGET_ID}" \
+            -f tag_name="v${TARGET_VER}" \
+            -F prerelease=false \
+            -f make_latest="true" >/dev/null
+
+          {
+            echo "## Production Release Rollback Completed"
+            echo ""
+            echo "- **Active Latest Release:** \`v${TARGET_VER}\`"
+            if [ -n "${{ inputs.broken_version }}" ]; then
+              echo "- **Demoted Release:** \`v${{ inputs.broken_version }}\` (marked prerelease)"
+            fi
+            echo "- **Reason:** ${{ inputs.reason }}"
+            echo ""
+            echo "### Roll Back Existing Servers"
+            echo "\`\`\`bash"
+            echo "supportdesk rollback --version ${TARGET_VER}"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"

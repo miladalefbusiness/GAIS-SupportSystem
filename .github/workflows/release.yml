@@ -15,18 +15,65 @@ on:
         required: false
         type: string
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  release:
+  pre-release-gate:
+    name: Pre-Release Quality, Migration & Test Gate
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      packages: write
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: supportdesk
+          POSTGRES_USER: supportdesk_admin
+          POSTGRES_PASSWORD: ci_postgres_admin_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U supportdesk_admin -d supportdesk"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      NODE_ENV: test
+      APP_URL: http://127.0.0.1:3000
+      APP_VERSION: 0.1.0
+      DOMAIN_NAME: localhost
+      TZ: Asia/Tehran
+      SQL_HOST: 127.0.0.1
+      SQL_PORT: '5432'
+      SQL_DB_NAME: supportdesk
+      SQL_USER: supportdesk_admin
+      SQL_PASSWORD: ci_postgres_admin_password
+      SQL_ADMIN_USER: supportdesk_admin
+      SQL_ADMIN_PASSWORD: ci_postgres_admin_password
+      BETTER_AUTH_SECRET: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      APP_ENCRYPTION_KEY: abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789
+      APP_HMAC_KEY: fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
+      SUPERADMIN_USERNAME: releasegate
+      SUPERADMIN_EMAIL: gate@support.local
+      SUPERADMIN_PASSWORD: ReleaseGatePass1234!
+      STORAGE_DRIVER: local
+      STORAGE_ROOT: /tmp/release-gate-storage
+      STORAGE_MAX_BYTES: '1073741824'
+      MAX_UPLOAD_MB: '25'
+
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      registry: ${{ steps.meta.outputs.registry }}
+      image: ${{ steps.meta.outputs.image }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Resolve release metadata
+      - name: Resolve and validate release metadata
         id: meta
         run: |
           if [ -n "${{ inputs.version }}" ]; then
@@ -34,8 +81,8 @@ jobs:
           else
             VERSION="${GITHUB_REF_NAME#v}"
           fi
-          if [ "$VERSION" = "latest" ] || [ -z "$VERSION" ]; then
-            echo "Invalid version '$VERSION'" >&2
+          if [ "$VERSION" = "latest" ] || ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "Invalid semantic version '$VERSION'" >&2
             exit 1
           fi
           REGISTRY="${{ inputs.registry || vars.CONTAINER_REGISTRY || 'ghcr.io' }}"
@@ -46,6 +93,153 @@ jobs:
           echo "registry=${REGISTRY}" >> "$GITHUB_OUTPUT"
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
 
+      - name: Verify shell syntax & executable permissions
+        run: |
+          test -x install.sh
+          test -x bin/supportdesk
+          test -x docker/entrypoint.sh
+          test -x docker/postgres-init.sh
+          test -x docker/proxy-entrypoint.sh
+          bash -n install.sh bin/supportdesk scripts/devops-check.sh
+          sh -n docker/*.sh
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Cache npm downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-release-${{ runner.os }}-${{ hashFiles('package.json') }}
+          restore-keys: |
+            npm-release-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps --no-audit --no-fund
+
+      - name: Run TypeScript & ESLint gates
+        run: |
+          npx next typegen
+          npx tsc --noEmit
+          npm run lint
+
+      - name: Run PostgreSQL migration, bootstrap & CLI integration tests
+        run: |
+          mkdir -p /tmp/release-gate-storage
+          npx tsx scripts/env-check.ts
+          npx tsx scripts/migrate.ts
+          npx tsx scripts/bootstrap.ts
+          npx vitest run --maxWorkers=1 tests/deployment-cli.test.ts tests/phase1.test.ts
+
+  container-smoke-verify:
+    name: Container Runtime Smoke Verification
+    needs: pre-release-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build single-arch candidate container
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: supportdesk-release-candidate:${{ needs.pre-release-gate.outputs.version }}
+          build-args: |
+            APP_VERSION=${{ needs.pre-release-gate.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify non-root startup, migrations, /api/health/ready & CLI
+        run: |
+          set -euo pipefail
+          docker network create rel-smoke-net
+          trap 'docker rm -f rel-app rel-pg >/dev/null 2>&1 || true; docker network rm rel-smoke-net >/dev/null 2>&1 || true' EXIT
+
+          docker run -d --name rel-pg --network rel-smoke-net \
+            -e POSTGRES_DB=supportdesk \
+            -e POSTGRES_USER=supportdesk_admin \
+            -e POSTGRES_PASSWORD=rel_admin_pass_999 \
+            -e APP_DB_USER=supportdesk_app \
+            -e APP_DB_PASSWORD=rel_app_pass_999 \
+            -v "$GITHUB_WORKSPACE/docker/postgres-init.sh:/docker-entrypoint-initdb.d/01-app-user.sh:ro" \
+            pgvector/pgvector:pg16
+
+          for i in $(seq 1 30); do
+            if docker exec rel-pg pg_isready -U supportdesk_admin -d supportdesk >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+          docker exec rel-pg pg_isready -U supportdesk_admin -d supportdesk
+
+          docker run -d --name rel-app --network rel-smoke-net \
+            -e NODE_ENV=production \
+            -e PORT=3000 \
+            -e APP_URL=http://127.0.0.1:3000 \
+            -e APP_VERSION=${{ needs.pre-release-gate.outputs.version }} \
+            -e DOMAIN_NAME=localhost \
+            -e TZ=Asia/Tehran \
+            -e SQL_HOST=rel-pg \
+            -e SQL_PORT=5432 \
+            -e SQL_DB_NAME=supportdesk \
+            -e SQL_USER=supportdesk_app \
+            -e SQL_PASSWORD=rel_app_pass_999 \
+            -e SQL_ADMIN_USER=supportdesk_admin \
+            -e SQL_ADMIN_PASSWORD=rel_admin_pass_999 \
+            -e BETTER_AUTH_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+            -e APP_ENCRYPTION_KEY=abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789 \
+            -e APP_HMAC_KEY=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210 \
+            -e SUPERADMIN_USERNAME=smokeadmin \
+            -e SUPERADMIN_EMAIL=smoke@support.local \
+            -e SUPERADMIN_PASSWORD=SmokeAdminPass1234! \
+            -e STORAGE_DRIVER=local \
+            -e STORAGE_ROOT=/var/lib/supportdesk/storage \
+            -e STORAGE_MAX_BYTES=1073741824 \
+            -e MAX_UPLOAD_MB=25 \
+            -e VALIDATE_ENV_ON_START=true \
+            -e RUN_MIGRATIONS_ON_START=true \
+            -e RUN_BOOTSTRAP_ON_START=true \
+            supportdesk-release-candidate:${{ needs.pre-release-gate.outputs.version }}
+
+          ready="false"
+          for i in $(seq 1 45); do
+            if docker exec rel-app wget -qO- http://127.0.0.1:3000/api/health/ready 2>/dev/null | grep -q '"status":"ready"'; then
+              ready="true"
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$ready" != "true" ]; then
+            docker logs rel-app || true
+            exit 1
+          fi
+
+          docker exec rel-app node ./node_modules/tsx/dist/cli.mjs ./scripts/admin-cli.ts list | grep -q 'smokeadmin'
+
+  release:
+    name: Build Multi-Arch Images & Publish GitHub Release
+    needs:
+      - pre-release-gate
+      - container-smoke-verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Set up QEMU (multi-arch)
         uses: docker/setup-qemu-action@v3
 
@@ -55,7 +249,7 @@ jobs:
       - name: Log in to Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ${{ steps.meta.outputs.registry }}
+          registry: ${{ needs.pre-release-gate.outputs.registry }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
@@ -67,16 +261,19 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           build-args: |
-            APP_VERSION=${{ steps.meta.outputs.version }}
+            APP_VERSION=${{ needs.pre-release-gate.outputs.version }}
           tags: |
-            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
+            ${{ needs.pre-release-gate.outputs.image }}:${{ needs.pre-release-gate.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Build release bundle tarball, manifest & SHA256SUMS
         run: |
           mkdir -p dist-release
-          TARBALL="supportdesk-v${{ steps.meta.outputs.version }}.tar.gz"
+          VERSION="${{ needs.pre-release-gate.outputs.version }}"
+          TAG="${{ needs.pre-release-gate.outputs.tag }}"
+          IMAGE="${{ needs.pre-release-gate.outputs.image }}:${VERSION}"
+          TARBALL="supportdesk-v${VERSION}.tar.gz"
           tar -czf "dist-release/${TARBALL}" \
             --exclude='.git' \
             --exclude='.github' \
@@ -99,9 +296,9 @@ jobs:
           TARBALL_SHA="$(sha256sum "dist-release/${TARBALL}" | awk '{print $1}')"
           cat > dist-release/release-manifest.json <<EOF
           {
-            "version": "${{ steps.meta.outputs.version }}",
-            "tag": "${{ steps.meta.outputs.tag }}",
-            "image": "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}",
+            "version": "${VERSION}",
+            "tag": "${TAG}",
+            "image": "${IMAGE}",
             "imageDigest": "${{ steps.docker.outputs.digest }}",
             "platforms": ["linux/amd64", "linux/arm64"],
             "tarball": "${TARBALL}",
@@ -119,11 +316,12 @@ jobs:
       - name: Publish GitHub Release artifacts
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.meta.outputs.tag }}
-          name: "SupportDesk ${{ steps.meta.outputs.tag }}"
+          tag_name: ${{ needs.pre-release-gate.outputs.tag }}
+          name: "SupportDesk ${{ needs.pre-release-gate.outputs.tag }}"
+          make_latest: true
           generate_release_notes: true
           files: |
             dist-release/install.sh
-            dist-release/supportdesk-v${{ steps.meta.outputs.version }}.tar.gz
+            dist-release/supportdesk-v${{ needs.pre-release-gate.outputs.version }}.tar.gz
             dist-release/release-manifest.json
             dist-release/SHA256SUMS

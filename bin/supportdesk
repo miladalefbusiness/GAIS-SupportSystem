@@ -203,10 +203,11 @@ Installation & Repair:
   reinstall [--version X.Y.Z] Recreate app & worker containers while preserving ALL data
   reset --destroy-data        DESTRUCTIVE: Wipe containers, database volumes & uploaded files
 
-Updates:
+Updates & Rollback:
   update [--version X.Y.Z]    Backup, verify release, migrate, upgrade & health-check
   update --check              Check available releases against current version
   update --registry <url>     Override container image registry during update
+  rollback [--version X.Y.Z]  Roll back to previous good version (auto-detects or explicit)
 
 Backup & Restore:
   backup [--all|--database|--files]  Create verified, checksummed backup bundle
@@ -970,7 +971,91 @@ cmd_update() {
   fi
 
   compose up -d proxy
-  ok "Successfully upgraded SupportDesk from ${cur_ver} to ${target_version}."
+  printf '%s\n' "$cur_ver" > "${ROOT_DIR}/.last-good-version"
+  chmod 600 "${ROOT_DIR}/.last-good-version"
+  ok "Successfully upgraded SupportDesk from ${cur_ver} to ${target_version} (previous version ${cur_ver} saved for rollback)."
+}
+
+cmd_rollback() {
+  [ -f "$ENV_FILE" ] || err "Missing ${ENV_FILE}."
+  local target_version="" backup_file=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --version) target_version="${2:-}"; shift 2 ;;
+      --backup) backup_file="${2:-}"; shift 2 ;;
+      *) err "Unknown option for rollback: $1 (usage: supportdesk rollback [--version X.Y.Z] [--backup /path/to/backup.tar.gz])" ;;
+    esac
+  done
+
+  if [ -z "$target_version" ] && [ -f "${ROOT_DIR}/.last-good-version" ]; then
+    target_version="$(tr -d '[:space:]' < "${ROOT_DIR}/.last-good-version")"
+  fi
+
+  [ -n "$target_version" ] || err "No target rollback version provided and no .last-good-version recorded. Specify: supportdesk rollback --version X.Y.Z"
+  [ "$target_version" != "latest" ] || err "Refusing 'latest' tag. Specify a pinned semantic version."
+
+  if [ -n "$backup_file" ] && [ ! -f "$backup_file" ]; then
+    err "Specified rollback backup archive not found: ${backup_file}"
+  fi
+
+  local cur_ver release_base
+  cur_ver="$(current_version)"
+  release_base="$(get_env_val RELEASE_BASE_URL "$DEFAULT_RELEASE_BASE")"
+
+  if [ "$cur_ver" = "$target_version" ] && [ -z "$backup_file" ]; then
+    ok "Already running version ${target_version}."
+    return 0
+  fi
+
+  log "Step 1/4 Creating safety backup prior to rollback (${cur_ver} -> ${target_version})..."
+  cmd_backup --all
+
+  local tmp_stage tarball_name
+  tmp_stage="$(mktemp -d)"
+  trap 'rm -rf "$tmp_stage"; trap - RETURN' RETURN
+  tarball_name="supportdesk-v${target_version}.tar.gz"
+
+  if fetch_release_manifest "$release_base" "$target_version" "${tmp_stage}/release-manifest.json"; then
+    if curl -fsSL "${release_base%/}/v${target_version}/SHA256SUMS" -o "${tmp_stage}/SHA256SUMS" 2>/dev/null \
+      && curl -fsSL "${release_base%/}/v${target_version}/${tarball_name}" -o "${tmp_stage}/${tarball_name}" 2>/dev/null; then
+      (cd "$tmp_stage" && grep -E "[[:space:]](\./)?${tarball_name}$" SHA256SUMS | sha256sum -c - >/dev/null 2>&1) \
+        || err "Rollback bundle ${tarball_name} SHA256 verification failed!"
+      tar -xzf "${tmp_stage}/${tarball_name}" -C "$ROOT_DIR" --exclude='.env' --exclude='data' --exclude='backups'
+      chmod +x "${ROOT_DIR}/bin/supportdesk" "${ROOT_DIR}/docker/"*.sh 2>/dev/null || true
+      ok "Restored release files from verified v${target_version} bundle."
+    fi
+  fi
+
+  log "Step 2/4 Pinning APP_VERSION=${target_version} and acquiring target images..."
+  set_env_val APP_VERSION "$target_version"
+  compose config -q || err "Compose configuration invalid after rollback."
+  if ! compose pull app worker; then
+    warn "Registry pull failed; building v${target_version} locally if Dockerfile exists..."
+    compose build app || {
+      set_env_val APP_VERSION "$cur_ver"
+      err "Rollback to v${target_version} failed acquiring image; restored APP_VERSION=${cur_ver}."
+    }
+  fi
+
+  if [ -n "$backup_file" ]; then
+    log "Step 3/4 Restoring database & storage snapshot from ${backup_file}..."
+    cmd_restore --file "$backup_file"
+  else
+    log "Step 3/4 Restarting containers on pinned version ${target_version}..."
+    local db_mode
+    db_mode="$(get_env_val DB_MODE bundled)"
+    if [ "$db_mode" != "external" ]; then
+      compose up -d postgres
+      wait_postgres_healthy
+    fi
+    compose up -d --force-recreate --no-deps app worker
+    compose up -d proxy
+  fi
+
+  log "Step 4/4 Verifying application readiness..."
+  wait_app_healthy 45
+  ok "Rollback to SupportDesk v${target_version} completed and verified."
 }
 
 # ==============================================================================
@@ -1174,6 +1259,7 @@ case "$CMD" in
   reinstall) cmd_reinstall "$@" ;;
   reset) cmd_reset "$@" ;;
   update) cmd_update "$@" ;;
+  rollback) cmd_rollback "$@" ;;
   backup) cmd_backup "$@" ;;
   restore) cmd_restore "$@" ;;
   admin) cmd_admin "$@" ;;

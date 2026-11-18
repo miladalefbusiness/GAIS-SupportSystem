@@ -1,0 +1,244 @@
+name: Continuous Integration & Quality Gate
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality-and-build:
+    name: Static Analysis, Lint, Typecheck & Next.js Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Cache npm downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-ci-${{ runner.os }}-${{ hashFiles('package.json') }}
+          restore-keys: |
+            npm-ci-${{ runner.os }}-
+
+      - name: Verify shell syntax & executable permissions
+        run: |
+          test -x install.sh
+          test -x bin/supportdesk
+          test -x docker/entrypoint.sh
+          test -x docker/postgres-init.sh
+          test -x docker/proxy-entrypoint.sh
+          bash -n install.sh bin/supportdesk scripts/devops-check.sh
+          sh -n docker/*.sh
+
+      - name: Verify Docker Compose configuration
+        run: |
+          SQL_PASSWORD=ci_sql_password_1234 \
+          SQL_ADMIN_PASSWORD=ci_admin_password_1234 \
+          POSTGRES_PASSWORD=ci_pg_password_1234 \
+          BETTER_AUTH_SECRET=0123456789abcdef0123456789abcdef \
+          APP_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+          APP_HMAC_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+          APP_URL=https://ci.example.com \
+          APP_VERSION=0.1.0 \
+          docker compose -f docker-compose.yml config -q
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps --no-audit --no-fund
+
+      - name: Generate Next.js types & run TypeScript check
+        run: |
+          npx next typegen
+          npx tsc --noEmit
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Verify Next.js standalone build without runtime secrets
+        env:
+          NODE_ENV: production
+          NEXT_TELEMETRY_DISABLED: '1'
+        run: npm run build
+
+  integration-tests:
+    name: PostgreSQL Migration, Bootstrap & CLI Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: supportdesk
+          POSTGRES_USER: supportdesk_admin
+          POSTGRES_PASSWORD: ci_postgres_admin_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U supportdesk_admin -d supportdesk"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      NODE_ENV: test
+      APP_URL: http://127.0.0.1:3000
+      APP_VERSION: 0.1.0
+      DOMAIN_NAME: localhost
+      TZ: Asia/Tehran
+      SQL_HOST: 127.0.0.1
+      SQL_PORT: '5432'
+      SQL_DB_NAME: supportdesk
+      SQL_USER: supportdesk_admin
+      SQL_PASSWORD: ci_postgres_admin_password
+      SQL_ADMIN_USER: supportdesk_admin
+      SQL_ADMIN_PASSWORD: ci_postgres_admin_password
+      BETTER_AUTH_SECRET: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      APP_ENCRYPTION_KEY: abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789
+      APP_HMAC_KEY: fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
+      SUPERADMIN_USERNAME: ciadmin
+      SUPERADMIN_EMAIL: ciadmin@support.local
+      SUPERADMIN_PASSWORD: CiAdminPassword1234!
+      SUPERADMIN_NAME: CI Super Admin
+      STORAGE_DRIVER: local
+      STORAGE_ROOT: /tmp/ci-storage
+      STORAGE_MAX_BYTES: '1073741824'
+      MAX_UPLOAD_MB: '25'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Cache npm downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-ci-${{ runner.os }}-${{ hashFiles('package.json') }}
+          restore-keys: |
+            npm-ci-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps --no-audit --no-fund
+
+      - name: Apply PostgreSQL migrations & Super Admin bootstrap
+        run: |
+          mkdir -p /tmp/ci-storage
+          npx tsx scripts/env-check.ts
+          npx tsx scripts/migrate.ts
+          npx tsx scripts/bootstrap.ts
+
+      - name: Run deployment CLI & core foundation test suites
+        run: npx vitest run --maxWorkers=1 tests/deployment-cli.test.ts tests/phase1.test.ts
+
+  container-smoke-test:
+    name: Docker Image Build & Live Container Readiness Smoke Test
+    needs:
+      - quality-and-build
+      - integration-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build single-arch smoke image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: supportdesk-smoke:ci
+          build-args: |
+            APP_VERSION=0.1.0-ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Boot container stack & verify /api/health/ready + admin-cli
+        run: |
+          set -euo pipefail
+          docker network create ci-smoke-net
+          trap 'docker rm -f ci-app ci-pg >/dev/null 2>&1 || true; docker network rm ci-smoke-net >/dev/null 2>&1 || true' EXIT
+
+          docker run -d --name ci-pg --network ci-smoke-net \
+            -e POSTGRES_DB=supportdesk \
+            -e POSTGRES_USER=supportdesk_admin \
+            -e POSTGRES_PASSWORD=ci_admin_pass_999 \
+            -e APP_DB_USER=supportdesk_app \
+            -e APP_DB_PASSWORD=ci_app_pass_999 \
+            -v "$GITHUB_WORKSPACE/docker/postgres-init.sh:/docker-entrypoint-initdb.d/01-app-user.sh:ro" \
+            pgvector/pgvector:pg16
+
+          for i in $(seq 1 30); do
+            if docker exec ci-pg pg_isready -U supportdesk_admin -d supportdesk >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+          docker exec ci-pg pg_isready -U supportdesk_admin -d supportdesk
+
+          docker run -d --name ci-app --network ci-smoke-net \
+            -e NODE_ENV=production \
+            -e PORT=3000 \
+            -e APP_URL=http://127.0.0.1:3000 \
+            -e APP_VERSION=0.1.0-ci \
+            -e DOMAIN_NAME=localhost \
+            -e TZ=Asia/Tehran \
+            -e SQL_HOST=ci-pg \
+            -e SQL_PORT=5432 \
+            -e SQL_DB_NAME=supportdesk \
+            -e SQL_USER=supportdesk_app \
+            -e SQL_PASSWORD=ci_app_pass_999 \
+            -e SQL_ADMIN_USER=supportdesk_admin \
+            -e SQL_ADMIN_PASSWORD=ci_admin_pass_999 \
+            -e BETTER_AUTH_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+            -e APP_ENCRYPTION_KEY=abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789 \
+            -e APP_HMAC_KEY=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210 \
+            -e SUPERADMIN_USERNAME=smokeadmin \
+            -e SUPERADMIN_EMAIL=smoke@support.local \
+            -e SUPERADMIN_PASSWORD=SmokeAdminPass1234! \
+            -e STORAGE_DRIVER=local \
+            -e STORAGE_ROOT=/var/lib/supportdesk/storage \
+            -e STORAGE_MAX_BYTES=1073741824 \
+            -e MAX_UPLOAD_MB=25 \
+            -e VALIDATE_ENV_ON_START=true \
+            -e RUN_MIGRATIONS_ON_START=true \
+            -e RUN_BOOTSTRAP_ON_START=true \
+            supportdesk-smoke:ci
+
+          ready="false"
+          for i in $(seq 1 45); do
+            if docker exec ci-app wget -qO- http://127.0.0.1:3000/api/health/ready 2>/dev/null | grep -q '"status":"ready"'; then
+              ready="true"
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$ready" != "true" ]; then
+            docker logs ci-app || true
+            exit 1
+          fi
+
+          docker exec ci-app id
+          docker exec ci-app node ./node_modules/tsx/dist/cli.mjs ./scripts/admin-cli.ts list | grep -q 'smokeadmin'

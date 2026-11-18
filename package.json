@@ -10,6 +10,7 @@
     "clean": "next clean",
     "test": "vitest run",
     "check": "tsc --noEmit && npm run lint && npm test",
+    "devops:check": "bash scripts/devops-check.sh",
     "db:generate": "drizzle-kit generate --config=src/db/drizzle.config.ts",
     "db:migrate": "tsx scripts/migrate.ts",
     "db:bootstrap": "tsx scripts/bootstrap.ts"

@@ -20,16 +20,21 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
 
-FROM node:22-alpine AS prod-deps
+FROM --platform=$BUILDPLATFORM node:22-alpine AS prod-deps
+ARG TARGETARCH
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1 \
     NPM_CONFIG_FETCH_RETRIES=5 \
     NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=20000 \
     NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=120000 \
-    NPM_CONFIG_MAXSOCKETS=4
-RUN apk add --no-cache libc6-compat
+    NPM_CONFIG_MAXSOCKETS=6
 COPY package.json package-lock.json* ./
-RUN if [ -f package-lock.json ]; then npm ci --omit=dev --legacy-peer-deps --no-audit --no-fund; else npm install --omit=dev --legacy-peer-deps --no-audit --no-fund; fi
+RUN NPM_CPU=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "x64") && \
+    if [ -f package-lock.json ]; then \
+      npm ci --omit=dev --os=linux --cpu="$NPM_CPU" --libc=musl --ignore-scripts --legacy-peer-deps --no-audit --no-fund; \
+    else \
+      npm install --omit=dev --os=linux --cpu="$NPM_CPU" --libc=musl --ignore-scripts --legacy-peer-deps --no-audit --no-fund; \
+    fi
 
 FROM node:22-alpine AS runner
 WORKDIR /app

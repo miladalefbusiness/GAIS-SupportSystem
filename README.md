@@ -122,6 +122,16 @@ Upgrade any running production server cleanly with automatic pre-update backup a
 ```bash
 supportdesk update --check
 supportdesk update --version 0.2.0
+
+# Roll back automatically to the previous recorded working version (or explicit version):
+supportdesk rollback
+supportdesk rollback --version 0.1.0
+```
+
+Before pushing changes locally, run the DevOps pre-handover gate:
+
+```bash
+npm run devops:check
 ```
 
 ---
@@ -131,7 +141,8 @@ supportdesk update --version 0.2.0
 | Guide | Topics Covered |
 |---|---|
 | [`INSTALL.md`](./INSTALL.md) | Server requirements, public/private repo install flags (`--repo`, `--branch`, `--token`, `--version`, `--local`) |
-| [`CLI.md`](./CLI.md) | Complete reference for `supportdesk status\|health\|config\|admin\|backup\|restore\|update\|repair\|reinstall\|reset` |
+| [`CLI.md`](./CLI.md) | Complete reference for `supportdesk status\|health\|config\|admin\|backup\|restore\|update\|rollback\|repair\|reinstall\|reset` |
+| [`DEVOPS.md`](./DEVOPS.md) | CI/CD GitHub Actions pipelines (`ci.yml`, `release.yml`, `rollback.yml`), safe handover gate & rollback workflows |
 | [`DEPLOYMENT.md`](./DEPLOYMENT.md) | Multi-container Docker Compose architecture (`postgres`, `app`, `worker`, `proxy`) |
 | [`UPDATE.md`](./UPDATE.md) | Pinned version upgrade workflow and rollback rules |
 | [`BACKUP-RESTORE.md`](./BACKUP-RESTORE.md) | Checksummed backup bundles, retention pruning, and verified restore |

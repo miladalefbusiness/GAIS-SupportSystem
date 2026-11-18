@@ -30,18 +30,24 @@ Installed globally at `/usr/local/bin/supportdesk` (linked to `bin/supportdesk`)
 
 ---
 
-## Versioned Updates
+## Versioned Updates & Rollback
 
 ```bash
 supportdesk update --check
 supportdesk update --version 0.2.0
 supportdesk update --version 0.2.0 --registry mirror.example.com/org
+
+# Roll back automatically to .last-good-version or an explicit pinned version (+ optional snapshot):
+supportdesk rollback
+supportdesk rollback --version 0.1.0
+supportdesk rollback --version 0.1.0 --backup /opt/supportdesk/backups/supportdesk_backup_<STAMP>_all.tar.gz
 ```
 
 - Refuses `latest` tags; requires a pinned semantic version (`--version X.Y.Z`).
 - Verifies `release-manifest.json`, `supportdesk-vX.Y.Z.tar.gz`, and `SHA256SUMS` when available from `RELEASE_BASE_URL`.
 - Automatically takes a full pre-update backup (`supportdesk backup --all`) before changing any files or containers.
 - Automatically rolls back `APP_VERSION` and restarts the previous `app`/`worker` containers if container startup or `/api/health/ready` fails.
+- Records `.last-good-version` on every successful update so `supportdesk rollback` can revert in one command.
 
 ---
 
