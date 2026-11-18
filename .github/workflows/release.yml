@@ -95,11 +95,7 @@ jobs:
 
       - name: Verify shell syntax & executable permissions
         run: |
-          test -x install.sh
-          test -x bin/supportdesk
-          test -x docker/entrypoint.sh
-          test -x docker/postgres-init.sh
-          test -x docker/proxy-entrypoint.sh
+          chmod +x install.sh bin/supportdesk docker/*.sh scripts/devops-check.sh
           bash -n install.sh bin/supportdesk scripts/devops-check.sh
           sh -n docker/*.sh
 
@@ -127,6 +123,7 @@ jobs:
 
       - name: Run PostgreSQL migration, bootstrap & CLI integration tests
         run: |
+          chmod +x install.sh bin/supportdesk docker/*.sh scripts/devops-check.sh
           mkdir -p /tmp/release-gate-storage
           npx tsx scripts/env-check.ts
           npx tsx scripts/migrate.ts

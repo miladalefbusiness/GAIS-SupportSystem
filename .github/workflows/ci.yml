@@ -37,11 +37,7 @@ jobs:
 
       - name: Verify shell syntax & executable permissions
         run: |
-          test -x install.sh
-          test -x bin/supportdesk
-          test -x docker/entrypoint.sh
-          test -x docker/postgres-init.sh
-          test -x docker/proxy-entrypoint.sh
+          chmod +x install.sh bin/supportdesk docker/*.sh scripts/devops-check.sh
           bash -n install.sh bin/supportdesk scripts/devops-check.sh
           sh -n docker/*.sh
 
@@ -146,7 +142,9 @@ jobs:
           npx tsx scripts/bootstrap.ts
 
       - name: Run deployment CLI & core foundation test suites
-        run: npx vitest run --maxWorkers=1 tests/deployment-cli.test.ts tests/phase1.test.ts
+        run: |
+          chmod +x install.sh bin/supportdesk docker/*.sh scripts/devops-check.sh
+          npx vitest run --maxWorkers=1 tests/deployment-cli.test.ts tests/phase1.test.ts
 
   container-smoke-test:
     name: Docker Image Build & Live Container Readiness Smoke Test
