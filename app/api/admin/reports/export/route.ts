@@ -6,8 +6,8 @@ import { logger } from '@/src/core/logging/logger.ts';
 import { listAuditLogsAdmin } from '@/src/modules/admin/audit.ts';
 import {
   getOperationalReports,
+  parseReportWindowDays,
   rowsToUtf8Csv,
-  type ReportWindowDays,
 } from '@/src/modules/admin/reports.ts';
 
 export const dynamic = 'force-dynamic';
@@ -23,15 +23,7 @@ export async function GET(req: NextRequest) {
   try {
     const { searchParams } = req.nextUrl;
     const kind = searchParams.get('kind') || 'tickets';
-    const rawDays = searchParams.get('days');
-    const days: ReportWindowDays =
-      rawDays === '7'
-        ? 7
-        : rawDays === '90'
-          ? 90
-          : rawDays === 'all'
-            ? 'all'
-            : 30;
+    const days = parseReportWindowDays(searchParams.get('days'), 30);
     const departmentId = searchParams.get('departmentId') || undefined;
     const { ipAddress, userAgent } = extractRequestContext(req.headers);
 
@@ -124,6 +116,9 @@ export async function GET(req: NextRequest) {
           'Departments',
           'ActiveTickets',
           'ResolvedTickets',
+          'AvgResolveHours',
+          'MinResolveHours',
+          'MaxResolveHours',
           'PublicReplies',
           'InternalNotes',
           'FilesUploaded',
@@ -137,6 +132,9 @@ export async function GET(req: NextRequest) {
           op.departmentNames.join(' | '),
           op.activeTickets,
           op.resolvedTickets,
+          op.avgResolveHours ?? '',
+          op.minResolveHours ?? '',
+          op.maxResolveHours ?? '',
           op.publicReplies,
           op.internalNotes,
           op.filesUploaded,

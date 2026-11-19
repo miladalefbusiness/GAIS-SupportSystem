@@ -13,6 +13,10 @@ import {
   storageQuotas,
   users,
 } from '@/src/db/schema.ts';
+import {
+  getDepartmentTicketQueueSummary,
+  type DepartmentTicketQueueSummaryResult,
+} from '@/src/modules/tickets/service.ts';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,24 +31,46 @@ export default async function WorkspacePage() {
   let dbOk = false;
   let counts = { users: 0, roles: 0, departments: 0 };
   let isAvailable = true;
+  let departmentTicketSummary: DepartmentTicketQueueSummaryResult = {
+    authorized:
+      session.access.isSuperAdmin ||
+      hasPermission(session.access, 'desk:workspace:access') ||
+      hasPermission(session.access, 'desk:tickets:view_department') ||
+      hasPermission(session.access, 'desk:tickets:view_all'),
+    scope:
+      session.access.isSuperAdmin ||
+      hasPermission(session.access, 'desk:tickets:view_all')
+        ? 'all_departments'
+        : 'assigned_membership',
+    totals: {
+      openCount: 0,
+      awaitingReplyCount: 0,
+      waitingForOperatorCount: 0,
+      waitingForCustomerCount: 0,
+    },
+    departments: [],
+  };
 
   try {
     await db.execute(sql`SELECT 1`);
     dbOk = true;
-    const [[uCount], [rCount], [dCount], availRow] = await Promise.all([
-      db.select({ c: sql<number>`count(*)::int` }).from(users),
-      db.select({ c: sql<number>`count(*)::int` }).from(roles),
-      db.select({ c: sql<number>`count(*)::int` }).from(departments),
-      db.query.operatorAvailability.findFirst({
-        where: eq(operatorAvailability.userId, session.user.id),
-      }),
-    ]);
+    const [[uCount], [rCount], [dCount], availRow, deptSummary] =
+      await Promise.all([
+        db.select({ c: sql<number>`count(*)::int` }).from(users),
+        db.select({ c: sql<number>`count(*)::int` }).from(roles),
+        db.select({ c: sql<number>`count(*)::int` }).from(departments),
+        db.query.operatorAvailability.findFirst({
+          where: eq(operatorAvailability.userId, session.user.id),
+        }),
+        getDepartmentTicketQueueSummary(session.access),
+      ]);
     counts = {
       users: uCount?.c ?? 0,
       roles: rCount?.c ?? 0,
       departments: dCount?.c ?? 0,
     };
     isAvailable = availRow?.isAvailable ?? true;
+    departmentTicketSummary = deptSummary;
   } catch {
     dbOk = false;
   }
@@ -114,6 +140,7 @@ export default async function WorkspacePage() {
         ipAddress: r.ipAddress,
         createdAt: r.createdAt.toISOString(),
       }))}
+      departmentTicketSummary={departmentTicketSummary}
     />
   );
 }

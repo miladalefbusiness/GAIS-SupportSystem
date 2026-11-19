@@ -162,9 +162,9 @@ export function WorkspaceChrome({
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900">
+    <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900 print:bg-white">
       {/* Top Bar with Dual Workspace Switcher */}
-      <header className="sticky top-0 z-30 border-b border-slate-200 bg-white">
+      <header className="sticky top-0 z-30 border-b border-slate-200 bg-white print:hidden">
         <div className="flex items-center justify-between gap-4 px-6 h-16">
           <div className="flex items-center gap-6 overflow-x-auto">
             <Link
@@ -316,7 +316,7 @@ export function WorkspaceChrome({
 
       <div className="flex-1 flex">
         {/* Right-Side RTL Navigation Sidebar */}
-        <aside className="hidden lg:flex w-64 shrink-0 flex-col border-l border-slate-200 bg-white p-4 justify-between">
+        <aside className="hidden lg:flex w-64 shrink-0 flex-col border-l border-slate-200 bg-white p-4 justify-between print:hidden">
           <div className="space-y-6">
             <div className="space-y-1">
               <p className="px-3 text-xs font-semibold text-slate-500">
@@ -569,9 +569,9 @@ export function WorkspaceChrome({
         </aside>
 
         {/* Main Content Viewport */}
-        <main className="flex-1 min-w-0 w-full p-5 sm:p-6 md:p-8 max-w-6xl space-y-6">
+        <main className="flex-1 min-w-0 w-full p-5 sm:p-6 md:p-8 max-w-6xl space-y-6 print:p-0 print:max-w-none">
           {/* Mobile quick links */}
-          <div className="flex lg:hidden items-center gap-2 overflow-x-auto pb-2 border-b border-slate-200 text-xs">
+          <div className="flex lg:hidden items-center gap-2 overflow-x-auto pb-2 border-b border-slate-200 text-xs print:hidden">
             <Link
               href="/workspace"
               className="px-3 py-1.5 rounded-md bg-white border border-slate-200 whitespace-nowrap"

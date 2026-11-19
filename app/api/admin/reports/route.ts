@@ -3,7 +3,7 @@ import { requireAnyPermission } from '@/src/core/auth/guards.ts';
 import { logger } from '@/src/core/logging/logger.ts';
 import {
   getOperationalReports,
-  type ReportWindowDays,
+  parseReportWindowDays,
 } from '@/src/modules/admin/reports.ts';
 
 export const dynamic = 'force-dynamic';
@@ -19,15 +19,7 @@ export async function GET(req: NextRequest) {
 
   try {
     const { searchParams } = req.nextUrl;
-    const rawDays = searchParams.get('days');
-    const days: ReportWindowDays =
-      rawDays === '7'
-        ? 7
-        : rawDays === '90'
-          ? 90
-          : rawDays === 'all'
-            ? 'all'
-            : 30;
+    const days = parseReportWindowDays(searchParams.get('days'), 30);
     const departmentId = searchParams.get('departmentId') || undefined;
 
     const data = await getOperationalReports({ days, departmentId });

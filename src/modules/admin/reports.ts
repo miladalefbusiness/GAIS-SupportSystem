@@ -12,7 +12,20 @@ import {
   users,
 } from '@/src/db/schema.ts';
 
-export type ReportWindowDays = 7 | 30 | 90 | 'all';
+export type ReportWindowDays = number | 'all';
+
+export function parseReportWindowDays(
+  raw: unknown,
+  fallback: ReportWindowDays = 30
+): ReportWindowDays {
+  if (raw === 'all') return 'all';
+  const parsed =
+    typeof raw === 'number' ? raw : Number(String(raw ?? '').trim());
+  if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 365) {
+    return parsed;
+  }
+  return fallback;
+}
 
 export interface OperationalReportsFilter {
   days?: ReportWindowDays;
@@ -26,11 +39,16 @@ function resolveCutoffDate(days: ReportWindowDays): Date | null {
   return now;
 }
 
+function roundHours(value: number | string | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  const num = Number(value);
+  if (!Number.isFinite(num) || num < 0) return null;
+  return Number(num.toFixed(1));
+}
+
 export async function getOperationalReports(filters: OperationalReportsFilter = {}) {
-  const days: ReportWindowDays =
-    filters.days === 7 || filters.days === 30 || filters.days === 90 || filters.days === 'all'
-      ? filters.days
-      : 30;
+  const days: ReportWindowDays = parseReportWindowDays(filters.days, 30);
+  const now = new Date();
   const cutoff = resolveCutoffDate(days);
   const deptId = filters.departmentId?.trim() || null;
 
@@ -57,6 +75,9 @@ export async function getOperationalReports(filters: OperationalReportsFilter = 
     priorityRows,
     deptTicketRows,
     recentTicketRows,
+    dailyCreatedRows,
+    dailyResolvedRows,
+    overallResolveRow,
     assignmentStrategyRows,
     recentAssignmentRows,
     operatorBaseRows,
@@ -100,7 +121,7 @@ export async function getOperationalReports(filters: OperationalReportsFilter = 
         total: sql<number>`COUNT(*)::int`,
         openCount: sql<number>`COUNT(*) FILTER (WHERE ${tickets.status} NOT IN ('resolved', 'closed'))::int`,
         resolvedCount: sql<number>`COUNT(*) FILTER (WHERE ${tickets.status} IN ('resolved', 'closed'))::int`,
-        avgResolveHours: sql<number | null>`AVG(EXTRACT(EPOCH FROM (${tickets.resolvedAt} - ${tickets.createdAt})) / 3600.0) FILTER (WHERE ${tickets.resolvedAt} IS NOT NULL)`,
+        avgResolveHours: sql<number | null>`AVG(EXTRACT(EPOCH FROM (COALESCE(${tickets.resolvedAt}, ${tickets.closedAt}) - ${tickets.createdAt})) / 3600.0) FILTER (WHERE COALESCE(${tickets.resolvedAt}, ${tickets.closedAt}) IS NOT NULL)`,
       })
       .from(tickets)
       .where(ticketWhere)
@@ -121,6 +142,46 @@ export async function getOperationalReports(filters: OperationalReportsFilter = 
       .where(ticketWhere)
       .orderBy(desc(tickets.createdAt))
       .limit(25),
+    db
+      .select({
+        dayIso: sql<string>`to_char(DATE_TRUNC('day', ${tickets.createdAt} AT TIME ZONE 'Asia/Tehran'), 'YYYY-MM-DD')`,
+        createdCount: sql<number>`COUNT(*)::int`,
+        openCount: sql<number>`COUNT(*) FILTER (WHERE ${tickets.status} NOT IN ('resolved', 'closed'))::int`,
+      })
+      .from(tickets)
+      .where(ticketWhere)
+      .groupBy(sql`1`)
+      .orderBy(sql`1 ASC`),
+    db
+      .select({
+        dayIso: sql<string>`to_char(DATE_TRUNC('day', COALESCE(${tickets.resolvedAt}, ${tickets.closedAt}) AT TIME ZONE 'Asia/Tehran'), 'YYYY-MM-DD')`,
+        resolvedCount: sql<number>`COUNT(*)::int`,
+      })
+      .from(tickets)
+      .where(
+        and(
+          inArray(tickets.status, ['resolved', 'closed']),
+          sql`COALESCE(${tickets.resolvedAt}, ${tickets.closedAt}) IS NOT NULL`,
+          ...(cutoff
+            ? [sql`COALESCE(${tickets.resolvedAt}, ${tickets.closedAt}) >= ${cutoff}`]
+            : []),
+          ...(deptId ? [eq(tickets.departmentId, deptId)] : [])
+        )
+      )
+      .groupBy(sql`1`)
+      .orderBy(sql`1 ASC`),
+    db
+      .select({
+        avgResolveHours: sql<number | null>`AVG(EXTRACT(EPOCH FROM (COALESCE(${tickets.resolvedAt}, ${tickets.closedAt}) - ${tickets.createdAt})) / 3600.0) FILTER (WHERE COALESCE(${tickets.resolvedAt}, ${tickets.closedAt}) IS NOT NULL)`,
+      })
+      .from(tickets)
+      .where(
+        and(
+          inArray(tickets.status, ['resolved', 'closed']),
+          ...(cutoff ? [gte(tickets.createdAt, cutoff)] : []),
+          ...(deptId ? [eq(tickets.departmentId, deptId)] : [])
+        )
+      ),
     db
       .select({
         strategyUsed: ticketAssignments.strategyUsed,
@@ -177,6 +238,9 @@ export async function getOperationalReports(filters: OperationalReportsFilter = 
       .select({
         userId: tickets.assignedOperatorId,
         count: sql<number>`COUNT(*)::int`,
+        avgResolveHours: sql<number | null>`AVG(EXTRACT(EPOCH FROM (COALESCE(${tickets.resolvedAt}, ${tickets.closedAt}) - ${tickets.createdAt})) / 3600.0) FILTER (WHERE COALESCE(${tickets.resolvedAt}, ${tickets.closedAt}) IS NOT NULL)`,
+        minResolveHours: sql<number | null>`MIN(EXTRACT(EPOCH FROM (COALESCE(${tickets.resolvedAt}, ${tickets.closedAt}) - ${tickets.createdAt})) / 3600.0) FILTER (WHERE COALESCE(${tickets.resolvedAt}, ${tickets.closedAt}) IS NOT NULL)`,
+        maxResolveHours: sql<number | null>`MAX(EXTRACT(EPOCH FROM (COALESCE(${tickets.resolvedAt}, ${tickets.closedAt}) - ${tickets.createdAt})) / 3600.0) FILTER (WHERE COALESCE(${tickets.resolvedAt}, ${tickets.closedAt}) IS NOT NULL)`,
       })
       .from(tickets)
       .where(
@@ -297,11 +361,44 @@ export async function getOperationalReports(filters: OperationalReportsFilter = 
 
   const activeMap = new Map(opActiveTicketsRows.map((r) => [r.userId || '', r.count]));
   const resolvedMap = new Map(
-    opResolvedTicketsRows.map((r) => [r.userId || '', r.count])
+    opResolvedTicketsRows.map((r) => [r.userId || '', r])
   );
   const repliesMap = new Map(opRepliesRows.map((r) => [r.userId || '', r.count]));
   const notesMap = new Map(opNotesRows.map((r) => [r.userId || '', r.count]));
   const filesMap = new Map(opFilesRows.map((r) => [r.userId || '', r]));
+
+  const createdByDay = new Map(dailyCreatedRows.map((r) => [r.dayIso, r]));
+  const resolvedByDay = new Map(dailyResolvedRows.map((r) => [r.dayIso, r.resolvedCount]));
+  const dayKeysSet = new Set<string>([
+    ...dailyCreatedRows.map((r) => r.dayIso),
+    ...dailyResolvedRows.map((r) => r.dayIso),
+  ]);
+
+  if (typeof days === 'number' && days <= 90) {
+    const tehranFormatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Tehran',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    for (let offset = days - 1; offset >= 0; offset -= 1) {
+      const d = new Date(now);
+      d.setUTCDate(d.getUTCDate() - offset);
+      dayKeysSet.add(tehranFormatter.format(d));
+    }
+  }
+
+  const dailyVolume = Array.from(dayKeysSet)
+    .sort((a, b) => a.localeCompare(b))
+    .map((dateIso) => {
+      const c = createdByDay.get(dateIso);
+      return {
+        dateIso,
+        createdCount: c?.createdCount ?? 0,
+        openCount: c?.openCount ?? 0,
+        resolvedCount: resolvedByDay.get(dateIso) ?? 0,
+      };
+    });
 
   const operatorActivity = operatorBaseRows
     .filter((op) => {
@@ -311,6 +408,7 @@ export async function getOperationalReports(filters: OperationalReportsFilter = 
     .map((op) => {
       const opMemberships = memberships.filter((m) => m.userId === op.id);
       const fileStat = filesMap.get(op.id);
+      const resolvedStat = resolvedMap.get(op.id);
       return {
         userId: op.id,
         name: op.name,
@@ -321,7 +419,10 @@ export async function getOperationalReports(filters: OperationalReportsFilter = 
           .map((m) => deptNameById.get(m.departmentId))
           .filter((n): n is string => Boolean(n)),
         activeTickets: activeMap.get(op.id) ?? 0,
-        resolvedTickets: resolvedMap.get(op.id) ?? 0,
+        resolvedTickets: resolvedStat?.count ?? 0,
+        avgResolveHours: roundHours(resolvedStat?.avgResolveHours),
+        minResolveHours: roundHours(resolvedStat?.minResolveHours),
+        maxResolveHours: roundHours(resolvedStat?.maxResolveHours),
         publicReplies: repliesMap.get(op.id) ?? 0,
         internalNotes: notesMap.get(op.id) ?? 0,
         filesUploaded: fileStat?.fileCount ?? 0,
@@ -342,12 +443,19 @@ export async function getOperationalReports(filters: OperationalReportsFilter = 
   );
 
   return {
-    filters: { days, departmentId: deptId },
+    filters: {
+      days,
+      departmentId: deptId,
+      windowStartIso: cutoff ? cutoff.toISOString() : null,
+      windowEndIso: now.toISOString(),
+    },
     departments: allDepts.map((d) => ({ id: d.id, nameFa: d.nameFa })),
     ticketSummary: {
       total: totalTickets,
       open: openTickets,
       resolved: resolvedTickets,
+      avgResolveHours: roundHours(overallResolveRow[0]?.avgResolveHours),
+      dailyVolume,
       byStatus: statusRows,
       byPriority: priorityRows,
       byDepartment: departmentBreakdown,

@@ -25,6 +25,8 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { formatBytesFa, formatJalaliDateTime, toPersianDigits } from '@/src/lib/jalali';
+import type { DepartmentTicketQueueSummaryResult } from '@/src/modules/tickets/service';
+import { DepartmentTicketStatsWidget } from './DepartmentTicketStatsWidget';
 
 export interface OverviewPanelProps {
   user: {
@@ -67,6 +69,7 @@ export interface OverviewPanelProps {
     ipAddress: string | null;
     createdAt: string;
   }>;
+  departmentTicketSummary: DepartmentTicketQueueSummaryResult;
 }
 
 const ACTOR_LABELS: Record<string, string> = {
@@ -80,6 +83,7 @@ export function OverviewPanel({
   user,
   foundation,
   recentAudit,
+  departmentTicketSummary,
 }: OverviewPanelProps) {
   const [available, setAvailable] = useState(user.isAvailable);
   const [updatingAvail, setUpdatingAvail] = useState(false);
@@ -286,6 +290,15 @@ export function OverviewPanel({
           </CardContent>
         </Card>
       </div>
+
+      {/* Department Open & Awaiting Reply Ticket Widget */}
+      {departmentTicketSummary.authorized && (
+        <DepartmentTicketStatsWidget
+          initialSummary={departmentTicketSummary}
+          canAdminDepartments={canAdminDepartments}
+          databaseOk={foundation.databaseOk}
+        />
+      )}
 
       {/* Collapsible Permissions Summary */}
       <Card>

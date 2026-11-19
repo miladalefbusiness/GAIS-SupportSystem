@@ -6,6 +6,7 @@ import {
   eq,
   inArray,
   isNull,
+  notInArray,
   or,
   sql,
 } from 'drizzle-orm';
@@ -15,6 +16,7 @@ import {
   hasPermission,
   type UserAccessProfile,
 } from '@/src/core/auth/rbac.ts';
+import { listAuthorizedDepartmentsForOperator } from '@/src/modules/departments/service.ts';
 import { getStorageDriver } from '@/src/core/storage/local-storage.ts';
 import { db } from '@/src/db/index.ts';
 import {
@@ -1929,3 +1931,140 @@ export async function markUserNotificationsRead(
       .where(eq(notifications.recipientUserId, userId));
   }
 }
+
+export interface DepartmentTicketQueueSummaryItem {
+  departmentId: string;
+  slug: string;
+  nameFa: string;
+  iconKey: string;
+  isActive: boolean;
+  isMember: boolean;
+  isManager: boolean;
+  openCount: number;
+  awaitingReplyCount: number;
+  waitingForOperatorCount: number;
+  waitingForCustomerCount: number;
+}
+
+export interface DepartmentTicketQueueSummaryResult {
+  authorized: boolean;
+  scope: 'all_departments' | 'assigned_membership';
+  totals: {
+    openCount: number;
+    awaitingReplyCount: number;
+    waitingForOperatorCount: number;
+    waitingForCustomerCount: number;
+  };
+  departments: DepartmentTicketQueueSummaryItem[];
+}
+
+export async function getDepartmentTicketQueueSummary(
+  access: UserAccessProfile
+): Promise<DepartmentTicketQueueSummaryResult> {
+  const canViewTickets =
+    access.isSuperAdmin ||
+    hasPermission(access, 'desk:workspace:access') ||
+    hasPermission(access, 'desk:tickets:view_department') ||
+    hasPermission(access, 'desk:tickets:view_all');
+
+  const viewAll =
+    access.isSuperAdmin || hasPermission(access, 'desk:tickets:view_all');
+  const scope: DepartmentTicketQueueSummaryResult['scope'] = viewAll
+    ? 'all_departments'
+    : 'assigned_membership';
+
+  if (!canViewTickets) {
+    return {
+      authorized: false,
+      scope,
+      totals: {
+        openCount: 0,
+        awaitingReplyCount: 0,
+        waitingForOperatorCount: 0,
+        waitingForCustomerCount: 0,
+      },
+      departments: [],
+    };
+  }
+
+  const authorizedDepts = await listAuthorizedDepartmentsForOperator(access);
+  if (authorizedDepts.length === 0) {
+    return {
+      authorized: true,
+      scope,
+      totals: {
+        openCount: 0,
+        awaitingReplyCount: 0,
+        waitingForOperatorCount: 0,
+        waitingForCustomerCount: 0,
+      },
+      departments: [],
+    };
+  }
+
+  const deptIds = authorizedDepts.map((d) => d.id);
+  const memberDeptIds = new Set(access.departments.map((d) => d.departmentId));
+  const managerDeptIds = new Set(
+    access.departments.filter((d) => d.isManager).map((d) => d.departmentId)
+  );
+
+  const groupedRows = await db
+    .select({
+      departmentId: tickets.departmentId,
+      openCount: sql<number>`count(*)::int`,
+      awaitingReplyCount: sql<number>`count(*) filter (where ${tickets.status} in ('open', 'waiting_for_operator', 'assigned', 'in_progress'))::int`,
+      waitingForOperatorCount: sql<number>`count(*) filter (where ${tickets.status} = 'waiting_for_operator')::int`,
+      waitingForCustomerCount: sql<number>`count(*) filter (where ${tickets.status} = 'waiting_for_customer')::int`,
+    })
+    .from(tickets)
+    .where(
+      and(
+        inArray(tickets.departmentId, deptIds),
+        notInArray(tickets.status, ['resolved', 'closed'])
+      )
+    )
+    .groupBy(tickets.departmentId);
+
+  const countsByDept = new Map(groupedRows.map((r) => [r.departmentId, r]));
+
+  const items: DepartmentTicketQueueSummaryItem[] = authorizedDepts.map((dept) => {
+    const row = countsByDept.get(dept.id);
+    return {
+      departmentId: dept.id,
+      slug: dept.slug,
+      nameFa: dept.nameFa,
+      iconKey: dept.iconKey,
+      isActive: dept.isActive,
+      isMember: memberDeptIds.has(dept.id),
+      isManager: managerDeptIds.has(dept.id) || dept.isManager,
+      openCount: Number(row?.openCount ?? 0),
+      awaitingReplyCount: Number(row?.awaitingReplyCount ?? 0),
+      waitingForOperatorCount: Number(row?.waitingForOperatorCount ?? 0),
+      waitingForCustomerCount: Number(row?.waitingForCustomerCount ?? 0),
+    };
+  });
+
+  const totals = items.reduce(
+    (acc, item) => {
+      acc.openCount += item.openCount;
+      acc.awaitingReplyCount += item.awaitingReplyCount;
+      acc.waitingForOperatorCount += item.waitingForOperatorCount;
+      acc.waitingForCustomerCount += item.waitingForCustomerCount;
+      return acc;
+    },
+    {
+      openCount: 0,
+      awaitingReplyCount: 0,
+      waitingForOperatorCount: 0,
+      waitingForCustomerCount: 0,
+    }
+  );
+
+  return {
+    authorized: true,
+    scope,
+    totals,
+    departments: items,
+  };
+}
+

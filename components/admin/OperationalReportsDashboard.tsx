@@ -4,9 +4,11 @@ import { useState } from 'react';
 import {
   Activity,
   BarChart3,
+  Clock,
   Download,
   GitBranch,
   Loader2,
+  Printer,
   RefreshCw,
   Sparkles,
   Ticket,
@@ -23,16 +25,33 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { formatBytesFa, formatJalaliDateTime, toPersianDigits } from '@/src/lib/jalali';
+import {
+  formatBytesFa,
+  formatJalaliDate,
+  formatJalaliDateTime,
+  toPersianDigits,
+} from '@/src/lib/jalali';
 import type { ReportWindowDays } from '@/src/modules/admin/reports';
 
 export interface OperationalReportsData {
-  filters: { days: ReportWindowDays; departmentId: string | null };
+  filters: {
+    days: ReportWindowDays;
+    departmentId: string | null;
+    windowStartIso: string | null;
+    windowEndIso: string;
+  };
   departments: Array<{ id: string; nameFa: string }>;
   ticketSummary: {
     total: number;
     open: number;
     resolved: number;
+    avgResolveHours: number | null;
+    dailyVolume: Array<{
+      dateIso: string;
+      createdCount: number;
+      openCount: number;
+      resolvedCount: number;
+    }>;
     byStatus: Array<{ status: string; count: number }>;
     byPriority: Array<{ priority: string; count: number }>;
     byDepartment: Array<{
@@ -81,6 +100,9 @@ export interface OperationalReportsData {
     departmentNames: string[];
     activeTickets: number;
     resolvedTickets: number;
+    avgResolveHours: number | null;
+    minResolveHours: number | null;
+    maxResolveHours: number | null;
     publicReplies: number;
     internalNotes: number;
     filesUploaded: number;
@@ -133,6 +155,14 @@ const STRATEGY_LABELS: Record<string, string> = {
   department_transfer: 'انتقال بین دپارتمان‌ها',
 };
 
+function formatResolveDuration(hours: number | null): string {
+  if (hours === null || !Number.isFinite(hours)) return '—';
+  if (hours < 1) {
+    return `${toPersianDigits(Math.max(1, Math.round(hours * 60)))} دقیقه`;
+  }
+  return `${toPersianDigits(hours.toFixed(1))} ساعت`;
+}
+
 export function OperationalReportsDashboard({
   initialData,
 }: {
@@ -140,6 +170,11 @@ export function OperationalReportsDashboard({
 }) {
   const [data, setData] = useState<OperationalReportsData>(initialData);
   const [days, setDays] = useState<ReportWindowDays>(initialData.filters.days);
+  const [customDaysInput, setCustomDaysInput] = useState<string>(
+    typeof initialData.filters.days === 'number'
+      ? String(initialData.filters.days)
+      : '30'
+  );
   const [departmentId, setDepartmentId] = useState<string>(
     initialData.filters.departmentId || ''
   );
@@ -158,11 +193,25 @@ export function OperationalReportsDashboard({
         return;
       }
       setData(json);
+      setDays(nextDays);
+      if (typeof nextDays === 'number') {
+        setCustomDaysInput(String(nextDays));
+      }
     } catch {
       toast.error('خطای شبکه در دریافت گزارش‌ها.');
     } finally {
       setLoading(false);
     }
+  }
+
+  function applyCustomDays(e: React.FormEvent) {
+    e.preventDefault();
+    const parsed = Number(customDaysInput.trim());
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 365) {
+      toast.error('تعداد روز باید عدد صحیح بین ۱ تا ۳۶۵ باشد.');
+      return;
+    }
+    void reloadReports(parsed, departmentId);
   }
 
   function exportUrl(kind: 'tickets' | 'assignments' | 'operators') {
@@ -173,37 +222,70 @@ export function OperationalReportsDashboard({
     return `/api/admin/reports/export?${qs.toString()}`;
   }
 
+  function printSummaryUrl() {
+    const qs = new URLSearchParams();
+    qs.set('days', String(days));
+    if (departmentId) qs.set('departmentId', departmentId);
+    return `/workspace/admin/reports/print?${qs.toString()}`;
+  }
+
+  const presetValue =
+    days === 'all' || [7, 14, 30, 60, 90].includes(Number(days))
+      ? String(days)
+      : 'custom';
+
   return (
     <div className="space-y-6">
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
         <div className="space-y-1">
           <h1 className="text-2xl font-bold text-slate-900">
             گزارش‌های جامع عملیاتی و عملکرد
           </h1>
           <p className="text-sm text-slate-600">
-            آمار تیکت‌ها، توزیع عادلانه و ارجاعات، فعالیت اپراتورها و خلاصه مصرف هوش
-            مصنوعی بر اساس داده‌های واقعی پایگاه داده
+            آمار حجم تیکت‌ها، زمان حل اپراتورها، توزیع و ارجاعات و خلاصه مصرف هوش مصنوعی
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
           <select
             aria-label="بازه زمانی گزارش"
-            value={String(days)}
+            value={presetValue}
             onChange={(e) => {
               const v = e.target.value;
-              const next: ReportWindowDays =
-                v === '7' ? 7 : v === '90' ? 90 : v === 'all' ? 'all' : 30;
-              setDays(next);
+              if (v === 'custom') return;
+              const next: ReportWindowDays = v === 'all' ? 'all' : Number(v);
               void reloadReports(next, departmentId);
             }}
             className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
           >
             <option value="7">۷ روز گذشته</option>
+            <option value="14">۱۴ روز گذشته</option>
             <option value="30">۳۰ روز گذشته</option>
+            <option value="60">۶۰ روز گذشته</option>
             <option value="90">۹۰ روز گذشته</option>
             <option value="all">کل تاریخچه</option>
+            {presetValue === 'custom' && (
+              <option value="custom">
+                بازه دلخواه ({toPersianDigits(days)} روز)
+              </option>
+            )}
           </select>
+
+          <form onSubmit={applyCustomDays} className="flex items-center gap-1.5">
+            <input
+              aria-label="تعداد روز دلخواه"
+              type="number"
+              min={1}
+              max={365}
+              value={customDaysInput}
+              onChange={(e) => setCustomDaysInput(e.target.value)}
+              className="h-9 w-20 rounded-lg border border-slate-200 bg-white px-2.5 text-xs text-center tabular-nums text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+              title="تعداد روز (۱ تا ۳۶۵)"
+            />
+            <Button type="submit" variant="outline" size="sm" disabled={loading}>
+              اعمال روز
+            </Button>
+          </form>
 
           <select
             aria-label="فیلتر دپارتمان"
@@ -237,6 +319,13 @@ export function OperationalReportsDashboard({
             )}
             <span>بروزرسانی</span>
           </Button>
+
+          <Button asChild size="sm" className="whitespace-nowrap shrink-0">
+            <Link href={printSummaryUrl()}>
+              <Printer className="h-4 w-4" />
+              <span>گزارش چاپی PDF</span>
+            </Link>
+          </Button>
         </div>
       </div>
 
@@ -244,7 +333,7 @@ export function OperationalReportsDashboard({
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card>
           <CardHeader className="pb-2">
-            <CardDescription>کل تیکت‌ها در بازه</CardDescription>
+            <CardDescription>کل تیکت‌ها و زمان حل</CardDescription>
             <CardTitle className="text-2xl tabular-nums flex items-center gap-2">
               <Ticket className="h-5 w-5 text-blue-700" />
               <span>{toPersianDigits(data.ticketSummary.total)}</span>
@@ -252,7 +341,8 @@ export function OperationalReportsDashboard({
           </CardHeader>
           <CardContent className="text-xs text-slate-500 tabular-nums">
             {toPersianDigits(data.ticketSummary.open)} باز ·{' '}
-            {toPersianDigits(data.ticketSummary.resolved)} مختومه
+            {toPersianDigits(data.ticketSummary.resolved)} مختومه · میانگین حل:{' '}
+            {formatResolveDuration(data.ticketSummary.avgResolveHours)}
           </CardContent>
         </Card>
 
@@ -362,6 +452,66 @@ export function OperationalReportsDashboard({
           <Card>
             <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
+                <CardTitle className="text-base">
+                  روند حجم روزانه تیکت‌ها در بازه انتخاب‌شده
+                </CardTitle>
+                <CardDescription>
+                  تعداد تیکت‌های ثبت‌شده و مختومه به تفکیک روز (زمان تهران)
+                </CardDescription>
+              </div>
+              <Button asChild variant="outline" size="sm" className="w-fit whitespace-nowrap shrink-0">
+                <Link href={printSummaryUrl()}>
+                  <Printer className="h-4 w-4" />
+                  <span>پیش‌نمایش چاپی PDF</span>
+                </Link>
+              </Button>
+            </CardHeader>
+            <CardContent className="overflow-x-auto">
+              {data.ticketSummary.dailyVolume.filter(
+                (r) => r.createdCount > 0 || r.resolvedCount > 0
+              ).length === 0 ? (
+                <p className="text-sm text-slate-500">
+                  در این بازه زمانی تیکتی ثبت یا مختومه نشده است.
+                </p>
+              ) : (
+                <table className="w-full text-sm text-right border-collapse">
+                  <thead>
+                    <tr className="border-b border-slate-200 text-xs text-slate-500">
+                      <th className="py-2.5 px-3 font-medium">تاریخ (شمسی)</th>
+                      <th className="py-2.5 px-3 font-medium">تیکت‌های ثبت‌شده</th>
+                      <th className="py-2.5 px-3 font-medium">حل / مختومه‌شده</th>
+                      <th className="py-2.5 px-3 font-medium">همچنان باز</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {data.ticketSummary.dailyVolume
+                      .filter((r) => r.createdCount > 0 || r.resolvedCount > 0)
+                      .slice(-30)
+                      .map((row) => (
+                        <tr key={row.dateIso}>
+                          <td className="py-2 px-3 text-xs tabular-nums">
+                            {formatJalaliDate(`${row.dateIso}T12:00:00Z`)}
+                          </td>
+                          <td className="py-2 px-3 tabular-nums font-medium">
+                            {toPersianDigits(row.createdCount)}
+                          </td>
+                          <td className="py-2 px-3 tabular-nums text-emerald-700">
+                            {toPersianDigits(row.resolvedCount)}
+                          </td>
+                          <td className="py-2 px-3 tabular-nums text-amber-700">
+                            {toPersianDigits(row.openCount)}
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
                 <CardTitle className="text-base">آمار تیکت به تفکیک دپارتمان</CardTitle>
                 <CardDescription>
                   تعداد تیکت‌های باز، حل‌شده و میانگین زمان حل تیکت (ساعت)
@@ -403,9 +553,7 @@ export function OperationalReportsDashboard({
                         {toPersianDigits(d.resolvedCount)}
                       </td>
                       <td className="py-2.5 px-3 text-xs tabular-nums">
-                        {d.avgResolveHours !== null
-                          ? `${toPersianDigits(d.avgResolveHours)} ساعت`
-                          : '—'}
+                        {formatResolveDuration(d.avgResolveHours)}
                       </td>
                     </tr>
                   ))}
@@ -578,6 +726,8 @@ export function OperationalReportsDashboard({
                     <th className="py-2.5 px-3 font-medium">حضور</th>
                     <th className="py-2.5 px-3 font-medium">تیکت باز</th>
                     <th className="py-2.5 px-3 font-medium">تیکت مختومه</th>
+                    <th className="py-2.5 px-3 font-medium">میانگین زمان حل</th>
+                    <th className="py-2.5 px-3 font-medium">بازه حل (کمینه / بیشینه)</th>
                     <th className="py-2.5 px-3 font-medium">پاسخ / یادداشت</th>
                     <th className="py-2.5 px-3 font-medium">فایل اشتراکی</th>
                     <th className="py-2.5 px-3 font-medium">آخرین ورود</th>
@@ -609,6 +759,17 @@ export function OperationalReportsDashboard({
                       </td>
                       <td className="py-2.5 px-3 tabular-nums text-emerald-700">
                         {toPersianDigits(op.resolvedTickets)}
+                      </td>
+                      <td className="py-2.5 px-3 text-xs tabular-nums font-medium text-blue-800">
+                        <span className="inline-flex items-center gap-1">
+                          <Clock className="h-3.5 w-3.5 text-slate-400" />
+                          <span>{formatResolveDuration(op.avgResolveHours)}</span>
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-3 text-xs tabular-nums text-slate-600">
+                        {op.minResolveHours !== null && op.maxResolveHours !== null
+                          ? `${formatResolveDuration(op.minResolveHours)} / ${formatResolveDuration(op.maxResolveHours)}`
+                          : '—'}
                       </td>
                       <td className="py-2.5 px-3 text-xs tabular-nums">
                         {toPersianDigits(op.publicReplies)} /{' '}

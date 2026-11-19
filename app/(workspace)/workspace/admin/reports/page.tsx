@@ -9,11 +9,18 @@ import {
 } from '@/components/ui/card';
 import { getCurrentSession } from '@/src/core/auth/auth.ts';
 import { hasPermission } from '@/src/core/auth/rbac.ts';
-import { getOperationalReports } from '@/src/modules/admin/reports.ts';
+import {
+  getOperationalReports,
+  parseReportWindowDays,
+} from '@/src/modules/admin/reports.ts';
 
 export const dynamic = 'force-dynamic';
 
-export default async function AdminReportsPage() {
+export default async function AdminReportsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ days?: string; departmentId?: string }>;
+}) {
   const session = await getCurrentSession();
   if (!session) redirect('/login');
 
@@ -42,7 +49,10 @@ export default async function AdminReportsPage() {
     );
   }
 
-  const reports = await getOperationalReports({ days: 30 });
+  const resolvedSearchParams = await searchParams;
+  const days = parseReportWindowDays(resolvedSearchParams.days, 30);
+  const departmentId = resolvedSearchParams.departmentId?.trim() || undefined;
+  const reports = await getOperationalReports({ days, departmentId });
 
   return <OperationalReportsDashboard initialData={reports} />;
 }
